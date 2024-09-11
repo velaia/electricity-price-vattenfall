@@ -11,6 +11,7 @@ sns.set_theme()
 def main():
 
     url = "https://davis.vattenfall.de/api/digitalinterface/1.3/Produkt/GetSpotPreis"
+    davis_token = 'access.ufu4XeozLP9+8CriHgQIUB+rLYRhcc9uKGe602wAHTSuAMRUsK048NIxuG+U.na1A0jFuEGMu1Kev'
 
     current_date = date.today().strftime("%Y-%m-%d")
 
@@ -44,7 +45,7 @@ def main():
     'Sec-Fetch-Mode': 'cors',
     'Sec-Fetch-Site': 'same-site',
     'User-Agent': 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/128.0.0.0 Safari/537.36',
-    'davis-token': 'access.tZzWtigQvYNCdBEs5XTH/iHfSQ37EV9+hoYHwoL0/G06gNeIN78srva8UQe9.9TAhJrMkwHsR84F6',
+    'davis-token': davis_token,
     'sec-ch-ua': '"Chromium";v="128", "Not;A=Brand";v="24", "Google Chrome";v="128"',
     'sec-ch-ua-mobile': '?0',
     'sec-ch-ua-platform': '"macOS"',
@@ -54,10 +55,12 @@ def main():
     response = requests.request("POST", url, headers=headers, data=payload)
 
     response_json = json.loads(response.text)
-    # prettry print response_json JSON to see the response
-    df = pd.DataFrame([tag["WerteNetto"] for tag in response_json['Result']['Tage']])
 
-    # print(df)
+    print(response_json)
+
+    df = pd.DataFrame([tag["WerteNetto"] for tag in response_json['Result']['Tage']],
+
+                      index=[tag["Datum"] for tag in response_json['Result']['Tage']])
 
     sns.lineplot(data=df.transpose(),)
 
