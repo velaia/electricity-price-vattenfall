@@ -1,8 +1,6 @@
 FROM python:3.12-slim
 COPY --chown=user --from=ghcr.io/astral-sh/uv:latest /uv /bin/uv
 
-RUN useradd -m -u 1000 user
-USER user
 WORKDIR /app
 
 
