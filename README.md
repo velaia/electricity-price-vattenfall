@@ -17,4 +17,5 @@ Testing Python 3.13 with this project. (Noticed that pandas 2.2.2 needed to be c
 
 * [x] Add functionality to get davis-token (required)
 * [x] Add today and tomorrow labels
-* [ ] Add Dockerfile
+* [x] Add Dockerfile
+* [ ] Idea: Gradio app that can run in HF Spaces?
