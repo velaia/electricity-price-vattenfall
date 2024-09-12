@@ -12,9 +12,4 @@ ADD main.py /app/main.py
 
 RUN uv sync --no-dev --frozen --no-install-project
 
-# COPY --chown=user src ./src
-RUN touch README.md
-
-RUN uv sync --no-dev --frozen 
-
 CMD ["uv", "run", "main.py"]
