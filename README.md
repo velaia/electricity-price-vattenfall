@@ -15,5 +15,5 @@ Testing Python 3.13 with this project. (Noticed that pandas 2.2.2 needed to be c
 
 ## TODO
 
-* [ ] ~~Add functionality to get davis-token (required)~~
+* [x] Add functionality to get davis-token (required)
 * [x] Add today and tomorrow labels
