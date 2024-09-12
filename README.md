@@ -2,22 +2,35 @@
 
 Get current German electricity prices from [Vattenfall Börsenpreise](https://www.vattenfall.de/strom/tarife/oekostrom-dynamik-boersenpreise) and create a diagram with today's and 
 tomorrow's prices (if available). Tomorrow's prices are published between noon and 3 PM each day and are not visible in
-the web UI of Vattenfall. But the API provides them and so they will appear in this app.
+the web UI of Vattenfall. But the API provides them, so they will appear in this app.
 
 ![Sample diagram](static/dual_timeline_plot.png)
+*Sample diagram output of the program*
 
-You need to fill the `david_token` variable before calling the program or it will result in an error. You can get the
-token by opening the website in your browser and copying it from the (Chrome) Developer Tools *Network* tab when
-switching the date:
+## Usage
 
-![Davis Token](static/davis-token.png)
+This assumes you have [Astral uv](https://github.com/astral-sh/uv) installed.
 
-Testing Python 3.13 with this project. (Noticed that pandas 2.2.2 needed to be compiled on macOS with 3.13, so left it
-out in the Dockerfile).
+After cloning the repository (e.g. `git clone --depth 1 https://github.com/velaia/electricity-price-vattenfall.git`),
+simply run the following command:
+```commandline
+uv run main.py
+```
+This creates a virtual environment with all the required dependencies and gets the latest (predicted) electricity prices
+from the Vattenfall homepage. It also updates the `dual_timeline_plot.png` diagram.
+
+## Docker
+
+You can build a Docker image by running
+```commandline
+doker build -t vattenfall-prices-germany:0.1 .
+```
 
 ## TODO
 
 * [x] Add functionality to get davis-token (required)
 * [x] Add today and tomorrow labels
 * [x] Add Dockerfile
+* [x] Update usage
 * [ ] Idea: Gradio app that can run in HF Spaces?
+* [ ] package?
