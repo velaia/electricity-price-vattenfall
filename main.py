@@ -3,17 +3,105 @@ import json
 import seaborn as sns
 import pandas as pd
 from matplotlib import pyplot as plt
-from datetime import date
+from datetime import date, datetime
 from icecream import ic
+import sqlite3
 
 sns.set_theme()
 
 
+def init_database(db_path: str) -> None:
+    """Initialize the SQLite database with required tables."""
+    conn = sqlite3.connect(db_path)
+    cursor = conn.cursor()
+
+    # Create price_days table
+    cursor.execute('''
+        CREATE TABLE IF NOT EXISTS price_days (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            date TEXT UNIQUE NOT NULL,
+            fetched_at TEXT NOT NULL
+        )
+    ''')
+
+    # Create price_intervals table
+    cursor.execute('''
+        CREATE TABLE IF NOT EXISTS price_intervals (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            day_id INTEGER NOT NULL,
+            interval_index INTEGER NOT NULL,
+            price_netto REAL NOT NULL,
+            FOREIGN KEY (day_id) REFERENCES price_days (id),
+            UNIQUE (day_id, interval_index)
+        )
+    ''')
+
+    conn.commit()
+    conn.close()
+    ic(f"Database initialized at {db_path}")
+
+
+def date_exists_in_db(db_path: str, date_str: str) -> bool:
+    """Check if a date already exists in the database."""
+    conn = sqlite3.connect(db_path)
+    cursor = conn.cursor()
+
+    cursor.execute('SELECT COUNT(*) FROM price_days WHERE date = ?', (date_str,))
+    count = cursor.fetchone()[0]
+
+    conn.close()
+    return count > 0
+
+
+def store_price_data(db_path: str, date_str: str, price_values: dict) -> None:
+    """Store price data for a specific date in the database."""
+    conn = sqlite3.connect(db_path)
+    cursor = conn.cursor()
+
+    try:
+        # Insert into price_days table
+        fetched_at = datetime.now().isoformat()
+        cursor.execute(
+            'INSERT INTO price_days (date, fetched_at) VALUES (?, ?)',
+            (date_str, fetched_at)
+        )
+        day_id = cursor.lastrowid
+
+        # Insert all intervals into price_intervals table
+        for interval_index, price in price_values.items():
+            cursor.execute(
+                'INSERT INTO price_intervals (day_id, interval_index, price_netto) VALUES (?, ?, ?)',
+                (day_id, int(interval_index), float(price))
+            )
+
+        conn.commit()
+        ic(f"Stored data for {date_str} ({len(price_values)} intervals)")
+    except Exception as e:
+        conn.rollback()
+        ic(f"Error storing data for {date_str}: {e}")
+        raise
+    finally:
+        conn.close()
+
+
 def main():
+    DB_PATH = "energy_prices.db"
+
     davis_token = get_davis_token()
+
+    # Initialize database
+    init_database(DB_PATH)
 
     response_json = get_current_electricity_price(davis_token)
     ic(response_json)
+
+    # Store price data in database
+    for tag in response_json['Result']['Tage']:
+        date_str = tag['Datum']
+        if date_exists_in_db(DB_PATH, date_str):
+            ic(f"Date {date_str} already exists in database, skipping")
+        else:
+            store_price_data(DB_PATH, date_str, tag['WerteNetto'])
 
     # generate plot and save to file
     df = pd.DataFrame([tag["WerteNetto"] for tag in response_json['Result']['Tage']],
