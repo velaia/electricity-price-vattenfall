@@ -3,7 +3,7 @@ import json
 import seaborn as sns
 import pandas as pd
 from matplotlib import pyplot as plt
-from datetime import date, datetime
+from datetime import date, datetime, timedelta
 from icecream import ic
 import sqlite3
 
@@ -84,28 +84,86 @@ def store_price_data(db_path: str, date_str: str, price_values: dict) -> None:
         conn.close()
 
 
+def load_price_data(db_path: str, date_str: str) -> dict:
+    """Load price data for a specific date from the database."""
+    conn = sqlite3.connect(db_path)
+    cursor = conn.cursor()
+
+    try:
+        # Get day_id for the date
+        cursor.execute('SELECT id FROM price_days WHERE date = ?', (date_str,))
+        result = cursor.fetchone()
+
+        if result is None:
+            return None
+
+        day_id = result[0]
+
+        # Get all intervals for this day
+        cursor.execute(
+            'SELECT interval_index, price_netto FROM price_intervals WHERE day_id = ? ORDER BY interval_index',
+            (day_id,)
+        )
+        intervals = cursor.fetchall()
+
+        # Convert to dict format matching API response
+        price_values = {str(interval_index): price for interval_index, price in intervals}
+        ic(f"Loaded data for {date_str} from database ({len(price_values)} intervals)")
+        return price_values
+    finally:
+        conn.close()
+
+
 def main():
     DB_PATH = "energy_prices.db"
-
-    davis_token = get_davis_token()
 
     # Initialize database
     init_database(DB_PATH)
 
-    response_json = get_current_electricity_price(davis_token)
-    ic(response_json)
+    # Determine which dates we need (today and tomorrow)
+    today = date.today()
+    tomorrow = today + timedelta(days=1)
+    today_str = today.strftime("%Y-%m-%d")
+    tomorrow_str = tomorrow.strftime("%Y-%m-%d")
 
-    # Store price data in database
-    for tag in response_json['Result']['Tage']:
-        date_str = tag['Datum']
-        if date_exists_in_db(DB_PATH, date_str):
-            ic(f"Date {date_str} already exists in database, skipping")
-        else:
-            store_price_data(DB_PATH, date_str, tag['WerteNetto'])
+    # Try to load data from database first
+    today_data = load_price_data(DB_PATH, today_str)
+    tomorrow_data = load_price_data(DB_PATH, tomorrow_str)
+
+    # Build list of dates we have and need to fetch
+    dates_data = {}
+
+    if today_data is not None:
+        dates_data[today_str] = today_data
+        ic(f"Using cached data for {today_str}")
+
+    if tomorrow_data is not None:
+        dates_data[tomorrow_str] = tomorrow_data
+        ic(f"Using cached data for {tomorrow_str}")
+
+    # Only fetch from API if we're missing any dates
+    if today_data is None or tomorrow_data is None:
+        ic("Fetching missing data from API")
+        davis_token = get_davis_token()
+        response_json = get_current_electricity_price(davis_token)
+        ic(response_json)
+
+        # Store and use data from API for missing dates
+        for tag in response_json['Result']['Tage']:
+            date_str = tag['Datum']
+            if date_str not in dates_data:
+                # Store in database
+                if not date_exists_in_db(DB_PATH, date_str):
+                    store_price_data(DB_PATH, date_str, tag['WerteNetto'])
+                dates_data[date_str] = tag['WerteNetto']
+    else:
+        ic("All data available in database, skipping API call")
 
     # generate plot and save to file
-    df = pd.DataFrame([tag["WerteNetto"] for tag in response_json['Result']['Tage']],
-                      index=[tag["Datum"] for tag in response_json['Result']['Tage']])
+    # Convert dates_data to list format for DataFrame
+    dates_list = sorted(dates_data.keys())
+    df = pd.DataFrame([dates_data[date_str] for date_str in dates_list],
+                      index=dates_list)
 
     # Create figure with better size
     plt.figure(figsize=(14, 7))
