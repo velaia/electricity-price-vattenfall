@@ -17,10 +17,20 @@ def main():
 
     # generate plot and save to file
     df = pd.DataFrame([tag["WerteNetto"] for tag in response_json['Result']['Tage']],
-
                       index=[tag["Datum"] for tag in response_json['Result']['Tage']])
-    ax = sns.lineplot(data=df.transpose())
-    plt.ylim(bottom=0)
+
+    # Create figure with better size
+    plt.figure(figsize=(14, 7))
+
+    # Use a cleaner style
+    sns.set_style("whitegrid")
+
+    # Create line plot with enhanced styling
+    ax = sns.lineplot(data=df.transpose(), linewidth=2.5, marker='o', markersize=4,
+                     markeredgewidth=0, alpha=0.9, palette='Set2')
+
+    # Set Y-axis to start at 0 with some padding at top
+    plt.ylim(bottom=0, top=df.max().max() * 1.1)
 
     # Show only hourly labels (every 4th tick for 15-minute data)
     num_intervals = len(df.columns)
@@ -28,9 +38,26 @@ def main():
     hourly_ticks = range(0, num_intervals, intervals_per_hour)
     hourly_labels = [str(i // intervals_per_hour) for i in hourly_ticks]
     ax.set_xticks(hourly_ticks)
-    ax.set_xticklabels(hourly_labels)
+    ax.set_xticklabels(hourly_labels, fontsize=10)
 
-    plt.savefig('dual_timeline_plot.png', dpi=300, bbox_inches='tight')
+    # Add title and labels
+    plt.title('German Electricity Spot Prices', fontsize=18, fontweight='bold', pad=20)
+    plt.xlabel('Hour of Day', fontsize=13, fontweight='bold')
+    plt.ylabel('Price (ct/kWh)', fontsize=13, fontweight='bold')
+
+    # Enhance grid
+    ax.grid(True, alpha=0.3, linestyle='--', linewidth=0.7)
+    ax.set_axisbelow(True)
+
+    # Improve legend
+    legend_labels = [pd.to_datetime(date).strftime('%A, %d %B %Y') for date in df.index]
+    plt.legend(labels=legend_labels, loc='upper left', fontsize=11, framealpha=0.95)
+
+    # Add subtle background color
+    ax.set_facecolor('#f8f9fa')
+
+    plt.tight_layout()
+    plt.savefig('dual_timeline_plot.png', dpi=300, bbox_inches='tight', facecolor='white')
 
     ic(df)
 
