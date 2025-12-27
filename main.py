@@ -19,7 +19,17 @@ def main():
     df = pd.DataFrame([tag["WerteNetto"] for tag in response_json['Result']['Tage']],
 
                       index=[tag["Datum"] for tag in response_json['Result']['Tage']])
-    sns.lineplot(data=df.transpose())
+    ax = sns.lineplot(data=df.transpose())
+    plt.ylim(bottom=0)
+
+    # Show only hourly labels (every 4th tick for 15-minute data)
+    num_intervals = len(df.columns)
+    intervals_per_hour = 4  # 15-minute intervals
+    hourly_ticks = range(0, num_intervals, intervals_per_hour)
+    hourly_labels = [str(i // intervals_per_hour) for i in hourly_ticks]
+    ax.set_xticks(hourly_ticks)
+    ax.set_xticklabels(hourly_labels)
+
     plt.savefig('dual_timeline_plot.png', dpi=300, bbox_inches='tight')
 
     ic(df)
@@ -40,7 +50,7 @@ def get_current_electricity_price(davis_token):
         "Sprache": "EN",
         "Priority": "High",
         "Request": {
-            "Typ": "60MIN_STROM",
+            "Typ": "15MIN_STROM",
             "Von": current_date,
             "Bis": current_date
         }
