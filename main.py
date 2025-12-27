@@ -19,10 +19,10 @@ def main():
     df = pd.DataFrame([tag["WerteNetto"] for tag in response_json['Result']['Tage']],
 
                       index=[tag["Datum"] for tag in response_json['Result']['Tage']])
-    sns.lineplot(data=df.transpose(), )
+    sns.lineplot(data=df.transpose())
     plt.savefig('dual_timeline_plot.png', dpi=300, bbox_inches='tight')
 
-    print(df)
+    ic(df)
 
 
 def get_current_electricity_price(davis_token):
