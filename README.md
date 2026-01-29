@@ -11,7 +11,7 @@ the web UI of Vattenfall. But the API provides them, so they will appear in this
 
 This assumes you have [Astral uv](https://github.com/astral-sh/uv) installed.
 
-After cloning the repository (e.g. `git clone --depth 1 https://github.com/velaia/electricity-price-vattenfall.git`),
+After cloning the repository (e.g. `git clone --depth 1 https://github.com/velaia/electrigicity-price-vattenfall.git`),
 simply run the following command:
 ```commandline
 uv run main.py
@@ -147,7 +147,7 @@ ic| response_json: {'LogId': 'E02C43E81D9A43BF8DC54C1FD4CF86EB',
 
 You can build a Docker image by running
 ```commandline
-doker build -t vattenfall-prices-germany:0.1 .
+docker build -t vattenfall-prices-germany:0.1 .
 ```
 
 ## TODO
