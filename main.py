@@ -173,7 +173,7 @@ def main():
 
     # Create line plot with enhanced styling
     ax = sns.lineplot(data=df.transpose(), linewidth=2.5, marker='o', markersize=4,
-                     markeredgewidth=0, alpha=0.9, palette='Set2')
+                     markeredgewidth=0, alpha=0.9, palette='Set1')
 
     # Set Y-axis to start at 0 with some padding at top
     plt.ylim(bottom=0, top=df.max().max() * 1.1)
@@ -196,8 +196,8 @@ def main():
     ax.set_axisbelow(True)
 
     # Improve legend
-    legend_labels = [pd.to_datetime(date).strftime('%A, %d %B %Y') for date in df.index]
-    plt.legend(labels=legend_labels, loc='upper left', fontsize=11, framealpha=0.95)
+    # legend_labels = [date for date in df.index]
+    plt.legend(loc='upper left', fontsize=11, framealpha=0.95)
 
     # Add subtle background color
     ax.set_facecolor('#f8f9fa')
