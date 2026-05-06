@@ -1,7 +1,13 @@
 from datetime import datetime
 import pytest
 
-from mqtt_publisher import current_interval_index, compute_metrics, load_config, MqttConfig
+from mqtt_publisher import (
+    MqttConfig,
+    compute_metrics,
+    compute_tomorrow_metrics,
+    current_interval_index,
+    load_config,
+)
 
 
 class TestCurrentIntervalIndex:
@@ -51,6 +57,15 @@ class TestComputeMetrics:
         metrics = compute_metrics(prices, datetime(2026, 5, 6, 12, 0))
         for value in metrics.values():
             assert value == 1.23
+
+    def test_tomorrow_aggregates(self):
+        prices = self._prices([float(i) for i in range(96)])
+        metrics = compute_tomorrow_metrics(prices)
+        assert metrics == {
+            "tomorrow_min": 0.0,
+            "tomorrow_max": 95.0,
+            "tomorrow_avg": round(sum(range(96)) / 96, 2),
+        }
 
     def test_hhmm_keys_from_vattenfall_api(self):
         # The real API returns HHMM-style keys: "0", "15", "30", "45", "100",

@@ -9,7 +9,7 @@ import json
 import os
 import time
 from dataclasses import dataclass
-from datetime import date, datetime, timedelta
+from datetime import datetime, timedelta
 
 import paho.mqtt.client as mqtt
 from dotenv import load_dotenv
@@ -23,14 +23,18 @@ def current_interval_index(now: datetime) -> int:
     return now.hour * 4 + now.minute // 15
 
 
-def compute_metrics(prices: dict[str, float], now: datetime) -> dict[str, float]:
-    """Compute the five published metrics from a dict of 96 interval prices.
+def _ordered_values(prices: dict[str, float]) -> list[float]:
+    """Return a chronologically ordered list of 96 prices.
 
-    ``prices`` maps stringified HHMM-style keys (e.g. "0", "15", "30", "45",
-    "100", ..., "2345") to ct/kWh values. Keys are sorted numerically to obtain
-    chronological order.
+    The Vattenfall API uses HHMM-style keys ("0", "15", "30", "45", "100",
+    ..., "2345"), so keys are sorted numerically.
     """
-    values = [float(prices[k]) for k in sorted(prices.keys(), key=int)]
+    return [float(prices[k]) for k in sorted(prices.keys(), key=int)]
+
+
+def compute_metrics(prices: dict[str, float], now: datetime) -> dict[str, float]:
+    """Compute today's five published metrics from a dict of 96 interval prices."""
+    values = _ordered_values(prices)
     idx = current_interval_index(now)
 
     current = values[idx]
@@ -43,6 +47,16 @@ def compute_metrics(prices: dict[str, float], now: datetime) -> dict[str, float]
         "today_min": round(min(values), 2),
         "today_max": round(max(values), 2),
         "today_avg": round(sum(values) / len(values), 2),
+    }
+
+
+def compute_tomorrow_metrics(prices: dict[str, float]) -> dict[str, float]:
+    """Compute tomorrow's three aggregate metrics from a dict of 96 interval prices."""
+    values = _ordered_values(prices)
+    return {
+        "tomorrow_min": round(min(values), 2),
+        "tomorrow_max": round(max(values), 2),
+        "tomorrow_avg": round(sum(values) / len(values), 2),
     }
 
 
@@ -85,6 +99,9 @@ SENSORS: list[tuple[str, str]] = [
     ("today_min", "Today Min"),
     ("today_max", "Today Max"),
     ("today_avg", "Today Avg"),
+    ("tomorrow_min", "Tomorrow Min"),
+    ("tomorrow_max", "Tomorrow Max"),
+    ("tomorrow_avg", "Tomorrow Avg"),
 ]
 
 
@@ -155,8 +172,14 @@ def publish_discovery(client: mqtt.Client) -> None:
 
 
 def publish_state(client: mqtt.Client, metrics: dict[str, float]) -> None:
-    """Publish a retained state message for each sensor."""
+    """Publish a retained state message for each metric in ``metrics``.
+
+    Sensors not present in ``metrics`` are skipped — useful when tomorrow's
+    data isn't yet available from the API.
+    """
     for key, _name in SENSORS:
+        if key not in metrics:
+            continue
         client.publish(
             _state_topic(key),
             payload=f"{metrics[key]:.2f}",
@@ -167,14 +190,21 @@ def publish_state(client: mqtt.Client, metrics: dict[str, float]) -> None:
 
 
 def publish_for_now(client: mqtt.Client, db_path: str, now: datetime) -> None:
-    """Compute metrics for ``now`` and publish them. Skip on data error."""
+    """Compute metrics for ``now`` and publish them. Skip on data error.
+
+    Tomorrow's aggregates are published only when tomorrow's data is available
+    (typically after ~13:00 local time when the Vattenfall API releases it).
+    """
     try:
         dates_data = get_price_data(db_path)
-        today_str = date.today().strftime("%Y-%m-%d")
+        today_str = now.date().strftime("%Y-%m-%d")
+        tomorrow_str = (now.date() + timedelta(days=1)).strftime("%Y-%m-%d")
         if today_str not in dates_data:
             ic(f"No data for {today_str}; skipping publish")
             return
         metrics = compute_metrics(dates_data[today_str], now)
+        if tomorrow_str in dates_data:
+            metrics.update(compute_tomorrow_metrics(dates_data[tomorrow_str]))
         publish_state(client, metrics)
     except Exception as exc:
         ic(f"publish_for_now failed: {exc}")
