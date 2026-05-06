@@ -4,11 +4,15 @@ Publishes five sensors to Home Assistant via MQTT Discovery, updated on every
 15-minute interval boundary.
 """
 
+import json
 import os
+import time
 from dataclasses import dataclass
 from datetime import datetime, timedelta
 
+import paho.mqtt.client as mqtt
 from dotenv import load_dotenv
+from icecream import ic
 
 
 def current_interval_index(now: datetime) -> int:
@@ -67,3 +71,92 @@ def load_config() -> MqttConfig:
     username = os.environ.get("MQTT_USER") or None
     password = os.environ.get("MQTT_PASS") or None
     return MqttConfig(host=host, port=port, username=username, password=password)
+
+
+AVAILABILITY_TOPIC = "vattenfall/prices/availability"
+
+SENSORS: list[tuple[str, str]] = [
+    ("current_price", "Current Price"),
+    ("next_hour_price", "Next Hour Price"),
+    ("today_min", "Today Min"),
+    ("today_max", "Today Max"),
+    ("today_avg", "Today Avg"),
+]
+
+
+def _state_topic(key: str) -> str:
+    return f"vattenfall/prices/{key}/state"
+
+
+def _discovery_topic(key: str) -> str:
+    return f"homeassistant/sensor/vattenfall_{key}/config"
+
+
+def _discovery_payload(key: str, name: str) -> dict:
+    return {
+        "device": {
+            "identifiers": ["vattenfall_prices"],
+            "name": "Vattenfall Spot Prices",
+            "manufacturer": "Vattenfall Davis API",
+        },
+        "unique_id": f"vattenfall_{key}",
+        "name": f"Vattenfall {name}",
+        "state_topic": _state_topic(key),
+        "availability_topic": AVAILABILITY_TOPIC,
+        "unit_of_measurement": "ct/kWh",
+        "device_class": "monetary",
+        "state_class": "measurement",
+        "suggested_display_precision": 2,
+    }
+
+
+def connect_mqtt(cfg: MqttConfig) -> mqtt.Client:
+    """Connect to the broker, retrying with exponential backoff. Returns a connected client.
+
+    Last Will is registered so that the broker publishes ``offline`` to the
+    availability topic if this process dies unexpectedly.
+    """
+    client = mqtt.Client(
+        mqtt.CallbackAPIVersion.VERSION2,
+        client_id="vattenfall-prices",
+    )
+    if cfg.username and cfg.password:
+        client.username_pw_set(cfg.username, cfg.password)
+    client.will_set(AVAILABILITY_TOPIC, payload="offline", qos=1, retain=True)
+
+    delay = 1
+    while True:
+        try:
+            client.connect(cfg.host, cfg.port, keepalive=60)
+            client.loop_start()
+            ic(f"Connected to MQTT broker at {cfg.host}:{cfg.port}")
+            return client
+        except OSError as exc:
+            ic(f"MQTT connect failed: {exc}; retrying in {delay}s")
+            time.sleep(delay)
+            delay = min(delay * 2, 60)
+
+
+def publish_discovery(client: mqtt.Client) -> None:
+    """Publish retained Discovery config for all five sensors."""
+    for key, name in SENSORS:
+        client.publish(
+            _discovery_topic(key),
+            payload=json.dumps(_discovery_payload(key, name)),
+            qos=1,
+            retain=True,
+        )
+    client.publish(AVAILABILITY_TOPIC, payload="online", qos=1, retain=True)
+    ic("Published discovery configs and availability=online")
+
+
+def publish_state(client: mqtt.Client, metrics: dict[str, float]) -> None:
+    """Publish a retained state message for each sensor."""
+    for key, _name in SENSORS:
+        client.publish(
+            _state_topic(key),
+            payload=f"{metrics[key]:.2f}",
+            qos=1,
+            retain=True,
+        )
+    ic(f"Published state: {metrics}")
