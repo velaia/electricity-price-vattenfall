@@ -52,6 +52,21 @@ class TestComputeMetrics:
         for value in metrics.values():
             assert value == 1.23
 
+    def test_hhmm_keys_from_vattenfall_api(self):
+        # The real API returns HHMM-style keys: "0", "15", "30", "45", "100",
+        # "115", ..., "2345". Index N (0..95) corresponds to the Nth such key
+        # in numeric order.
+        prices = {}
+        for i in range(96):
+            hour, quarter = divmod(i, 4)
+            key = str(hour * 100 + quarter * 15)
+            prices[key] = float(i)
+        metrics = compute_metrics(prices, datetime(2026, 5, 6, 13, 0))
+        # 13:00 is interval 52
+        assert metrics["current_price"] == 52.0
+        assert metrics["today_min"] == 0.0
+        assert metrics["today_max"] == 95.0
+
 
 from mqtt_publisher import seconds_until_next_boundary
 

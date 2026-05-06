@@ -26,9 +26,11 @@ def current_interval_index(now: datetime) -> int:
 def compute_metrics(prices: dict[str, float], now: datetime) -> dict[str, float]:
     """Compute the five published metrics from a dict of 96 interval prices.
 
-    ``prices`` maps stringified interval index ("0".."95") to ct/kWh value.
+    ``prices`` maps stringified HHMM-style keys (e.g. "0", "15", "30", "45",
+    "100", ..., "2345") to ct/kWh values. Keys are sorted numerically to obtain
+    chronological order.
     """
-    values = [float(prices[str(i)]) for i in range(96)]
+    values = [float(prices[k]) for k in sorted(prices.keys(), key=int)]
     idx = current_interval_index(now)
 
     current = values[idx]
@@ -63,8 +65,7 @@ class MqttConfig:
 
 
 def load_config() -> MqttConfig:
-    """Load MQTT broker config from .env / environment."""
-    load_dotenv()
+    """Load MQTT broker config from environment variables."""
     host = os.environ.get("MQTT_HOST")
     if not host:
         raise RuntimeError(
@@ -196,6 +197,7 @@ async def run(db_path: str = "energy_prices.db") -> None:
 
 
 def main() -> None:
+    load_dotenv()
     try:
         asyncio.run(run())
     except KeyboardInterrupt:
