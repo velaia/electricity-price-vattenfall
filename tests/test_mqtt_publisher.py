@@ -1,7 +1,7 @@
 from datetime import datetime
 import pytest
 
-from mqtt_publisher import current_interval_index, compute_metrics
+from mqtt_publisher import current_interval_index, compute_metrics, load_config, MqttConfig
 
 
 class TestCurrentIntervalIndex:
@@ -76,3 +76,26 @@ class TestSecondsUntilNextBoundary:
     def test_crosses_midnight(self):
         now = datetime(2026, 5, 6, 23, 50, 0)
         assert seconds_until_next_boundary(now) == 600
+
+
+class TestLoadConfig:
+    def test_minimal_config(self, monkeypatch):
+        monkeypatch.setenv("MQTT_HOST", "broker.local")
+        monkeypatch.delenv("MQTT_PORT", raising=False)
+        monkeypatch.delenv("MQTT_USER", raising=False)
+        monkeypatch.delenv("MQTT_PASS", raising=False)
+        cfg = load_config()
+        assert cfg == MqttConfig(host="broker.local", port=1883, username=None, password=None)
+
+    def test_full_config(self, monkeypatch):
+        monkeypatch.setenv("MQTT_HOST", "broker.local")
+        monkeypatch.setenv("MQTT_PORT", "8883")
+        monkeypatch.setenv("MQTT_USER", "ha")
+        monkeypatch.setenv("MQTT_PASS", "secret")
+        cfg = load_config()
+        assert cfg == MqttConfig(host="broker.local", port=8883, username="ha", password="secret")
+
+    def test_missing_host_raises(self, monkeypatch):
+        monkeypatch.delenv("MQTT_HOST", raising=False)
+        with pytest.raises(RuntimeError, match="MQTT_HOST"):
+            load_config()

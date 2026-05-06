@@ -4,7 +4,11 @@ Publishes five sensors to Home Assistant via MQTT Discovery, updated on every
 15-minute interval boundary.
 """
 
+import os
+from dataclasses import dataclass
 from datetime import datetime, timedelta
+
+from dotenv import load_dotenv
 
 
 def current_interval_index(now: datetime) -> int:
@@ -41,3 +45,25 @@ def seconds_until_next_boundary(now: datetime) -> int:
         + timedelta(minutes=15 - minutes_into_quarter)
     )
     return int((next_boundary - now).total_seconds())
+
+
+@dataclass(frozen=True)
+class MqttConfig:
+    host: str
+    port: int
+    username: str | None
+    password: str | None
+
+
+def load_config() -> MqttConfig:
+    """Load MQTT broker config from .env / environment."""
+    load_dotenv()
+    host = os.environ.get("MQTT_HOST")
+    if not host:
+        raise RuntimeError(
+            "MQTT_HOST is required. Copy .env.example to .env and set the broker host."
+        )
+    port = int(os.environ.get("MQTT_PORT", "1883"))
+    username = os.environ.get("MQTT_USER") or None
+    password = os.environ.get("MQTT_PASS") or None
+    return MqttConfig(host=host, port=port, username=username, password=password)
