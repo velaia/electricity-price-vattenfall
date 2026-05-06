@@ -4,15 +4,18 @@ Publishes five sensors to Home Assistant via MQTT Discovery, updated on every
 15-minute interval boundary.
 """
 
+import asyncio
 import json
 import os
 import time
 from dataclasses import dataclass
-from datetime import datetime, timedelta
+from datetime import date, datetime, timedelta
 
 import paho.mqtt.client as mqtt
 from dotenv import load_dotenv
 from icecream import ic
+
+from main import get_price_data
 
 
 def current_interval_index(now: datetime) -> int:
@@ -160,3 +163,44 @@ def publish_state(client: mqtt.Client, metrics: dict[str, float]) -> None:
             retain=True,
         )
     ic(f"Published state: {metrics}")
+
+
+def publish_for_now(client: mqtt.Client, db_path: str, now: datetime) -> None:
+    """Compute metrics for ``now`` and publish them. Skip on data error."""
+    try:
+        dates_data = get_price_data(db_path)
+        today_str = date.today().strftime("%Y-%m-%d")
+        if today_str not in dates_data:
+            ic(f"No data for {today_str}; skipping publish")
+            return
+        metrics = compute_metrics(dates_data[today_str], now)
+        publish_state(client, metrics)
+    except Exception as exc:
+        ic(f"publish_for_now failed: {exc}")
+
+
+async def run(db_path: str = "energy_prices.db") -> None:
+    """Main loop: connect, publish discovery + initial state, then publish on every
+    15-minute boundary forever."""
+    cfg = load_config()
+    client = connect_mqtt(cfg)
+    publish_discovery(client)
+
+    publish_for_now(client, db_path, datetime.now())
+
+    while True:
+        delay = seconds_until_next_boundary(datetime.now())
+        ic(f"Sleeping {delay}s until next 15-minute boundary")
+        await asyncio.sleep(delay)
+        publish_for_now(client, db_path, datetime.now())
+
+
+def main() -> None:
+    try:
+        asyncio.run(run())
+    except KeyboardInterrupt:
+        ic("Shutting down")
+
+
+if __name__ == "__main__":
+    main()
