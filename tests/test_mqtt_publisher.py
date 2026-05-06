@@ -51,3 +51,28 @@ class TestComputeMetrics:
         metrics = compute_metrics(prices, datetime(2026, 5, 6, 12, 0))
         for value in metrics.values():
             assert value == 1.23
+
+
+from mqtt_publisher import seconds_until_next_boundary
+
+
+class TestSecondsUntilNextBoundary:
+    def test_just_after_boundary(self):
+        now = datetime(2026, 5, 6, 12, 0, 0)
+        assert seconds_until_next_boundary(now) == 900
+
+    def test_one_second_before_boundary(self):
+        now = datetime(2026, 5, 6, 12, 14, 59)
+        assert seconds_until_next_boundary(now) == 1
+
+    def test_mid_interval(self):
+        now = datetime(2026, 5, 6, 12, 7, 30)
+        assert seconds_until_next_boundary(now) == 450
+
+    def test_crosses_hour(self):
+        now = datetime(2026, 5, 6, 12, 50, 0)
+        assert seconds_until_next_boundary(now) == 600
+
+    def test_crosses_midnight(self):
+        now = datetime(2026, 5, 6, 23, 50, 0)
+        assert seconds_until_next_boundary(now) == 600

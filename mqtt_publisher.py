@@ -4,7 +4,7 @@ Publishes five sensors to Home Assistant via MQTT Discovery, updated on every
 15-minute interval boundary.
 """
 
-from datetime import datetime
+from datetime import datetime, timedelta
 
 
 def current_interval_index(now: datetime) -> int:
@@ -31,3 +31,13 @@ def compute_metrics(prices: dict[str, float], now: datetime) -> dict[str, float]
         "today_max": round(max(values), 2),
         "today_avg": round(sum(values) / len(values), 2),
     }
+
+
+def seconds_until_next_boundary(now: datetime) -> int:
+    """Return whole seconds until the next 15-minute wall-clock boundary."""
+    minutes_into_quarter = now.minute % 15
+    next_boundary = (
+        now.replace(second=0, microsecond=0)
+        + timedelta(minutes=15 - minutes_into_quarter)
+    )
+    return int((next_boundary - now).total_seconds())
