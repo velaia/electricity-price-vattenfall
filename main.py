@@ -5,6 +5,7 @@ import numpy as np
 import seaborn as sns
 import pandas as pd
 from matplotlib import pyplot as plt
+import matplotlib.dates as mdates
 import matplotlib.patheffects as path_effects
 from matplotlib.colors import LinearSegmentedColormap
 from datetime import date, datetime, timedelta
@@ -164,6 +165,31 @@ def get_price_data(db_path: str = "energy_prices.db") -> dict[str, dict]:
     return dates_data
 
 
+def load_daily_price_stats(db_path: str) -> pd.DataFrame:
+    """Load all stored days and compute per-day mean and standard deviation."""
+    conn = sqlite3.connect(db_path)
+    try:
+        df = pd.read_sql_query(
+            'SELECT d.date, i.price_netto '
+            'FROM price_days d JOIN price_intervals i ON i.day_id = d.id',
+            conn)
+    finally:
+        conn.close()
+
+    stats = df.groupby('date')['price_netto'].agg(['mean', 'std']).reset_index()
+    stats['std'] = stats['std'].fillna(0.0)
+    stats = stats.sort_values('date')
+    stats['date'] = pd.to_datetime(stats['date'])
+    ic(f"Loaded daily stats for {len(stats)} days")
+    return stats
+
+
+def stats_hash_data(stats: pd.DataFrame) -> dict:
+    """Serializable view of the daily stats, for plot change detection."""
+    return {d.strftime('%Y-%m-%d'): [m, s]
+            for d, m, s in zip(stats['date'], stats['mean'], stats['std'])}
+
+
 def plot_is_current(dates_data: dict, plot_path: str, hash_path: str) -> str:
     """Return the data hash, or None if the existing plot already matches it."""
     data_hash = hashlib.md5(json.dumps(dates_data, sort_keys=True).encode()).hexdigest()
@@ -246,6 +272,56 @@ def generate_plot(dates_data: dict, plot_path: str, hash_path: str) -> None:
     ic(df)
 
 
+def generate_distribution_plot(stats: pd.DataFrame, plot_path: str, hash_path: str) -> None:
+    """Generate the classic seaborn distribution plot (daily mean with a ±1 sigma band)."""
+    data_hash = plot_is_current(stats_hash_data(stats), plot_path, hash_path)
+    if data_hash is None:
+        ic("Distribution plot is up to date, skipping regeneration")
+        return
+
+    lower = stats['mean'] - stats['std']
+    upper = stats['mean'] + stats['std']
+
+    plt.figure(figsize=(14, 7))
+    sns.set_style("whitegrid")
+    ax = plt.gca()
+
+    color = sns.color_palette('Set1')[0]
+    ax.fill_between(stats['date'], lower, upper, color=color, alpha=0.5,
+                    linewidth=0, label='±1σ range')
+    ax.plot(stats['date'], stats['mean'], color=color, linewidth=2.5,
+            alpha=0.9, label='Daily mean')
+
+    # Spot prices can go negative, so only pin the bottom at 0 when the band stays above it
+    plt.ylim(bottom=min(0, lower.min() * 1.1), top=upper.max() * 1.1)
+    if lower.min() < 0:
+        ax.axhline(0, color='black', alpha=0.4, linewidth=1)
+
+    locator = mdates.AutoDateLocator()
+    ax.xaxis.set_major_locator(locator)
+    ax.xaxis.set_major_formatter(mdates.ConciseDateFormatter(locator))
+
+    plt.title('German Electricity Spot Prices — Daily Distribution',
+              fontsize=18, fontweight='bold', pad=20)
+    plt.xlabel('Date', fontsize=13, fontweight='bold')
+    plt.ylabel('Price (ct/kWh)', fontsize=13, fontweight='bold')
+
+    ax.grid(True, alpha=0.3, linestyle='--', linewidth=0.7)
+    ax.set_axisbelow(True)
+
+    plt.legend(loc='upper left', fontsize=11, framealpha=0.95)
+
+    ax.set_facecolor('#f8f9fa')
+
+    plt.tight_layout()
+    plt.savefig(plot_path, dpi=300, bbox_inches='tight', facecolor='white')
+
+    with open(hash_path, 'w') as f:
+        f.write(data_hash)
+
+    ic("Distribution plot regenerated")
+
+
 def generate_futuristic_plot(dates_data: dict, plot_path: str, hash_path: str) -> None:
     """Generate a synthwave/retro-future styled plot."""
     data_hash = plot_is_current(dates_data, plot_path, hash_path)
@@ -321,6 +397,94 @@ def generate_futuristic_plot(dates_data: dict, plot_path: str, hash_path: str) -
     ic(df)
 
 
+def generate_futuristic_distribution_plot(stats: pd.DataFrame, plot_path: str, hash_path: str) -> None:
+    """Generate a synthwave/retro-future distribution plot (daily mean with a ±1 sigma band)."""
+    data_hash = plot_is_current(stats_hash_data(stats), plot_path, hash_path)
+    if data_hash is None:
+        ic("Futuristic distribution plot is up to date, skipping regeneration")
+        return
+
+    bg_dark = '#0d0221'
+    bg_purple = '#2b0a4e'
+    line_pink = '#ff2975'
+    band_orange = '#ff9e00'
+    grid_pink = '#ff2975'
+    text_light = '#f0e6ff'
+    title_cyan = '#9df9ff'
+
+    x = mdates.date2num(stats['date'])
+    mean = stats['mean'].values
+    lower = mean - stats['std'].values
+    upper = mean + stats['std'].values
+
+    y_top = upper.max() * 1.1
+    y_bottom = min(0, lower.min() * 1.1)
+
+    fig, ax = plt.subplots(figsize=(14, 7))
+    fig.patch.set_facecolor(bg_dark)
+
+    # Vertical purple-to-black gradient background
+    gradient = np.linspace(0, 1, 256).reshape(-1, 1)
+    bg_cmap = LinearSegmentedColormap.from_list('synthwave_bg', [bg_purple, bg_dark])
+    ax.imshow(gradient, aspect='auto', cmap=bg_cmap,
+              extent=[x[0], x[-1], y_bottom, y_top], zorder=0)
+
+    # Retro grid: horizontal lines more prominent than vertical (one per month)
+    ax.grid(False)
+    for y in np.linspace(y_bottom, y_top, 12):
+        ax.axhline(y, color=grid_pink, alpha=0.18, linewidth=0.9, zorder=1)
+    for xv in mdates.MonthLocator().tick_values(stats['date'].min(), stats['date'].max()):
+        ax.axvline(xv, color=grid_pink, alpha=0.08, linewidth=0.7, zorder=1)
+
+    # Sigma band as a glowing sunset-orange area with faint edge lines
+    ax.fill_between(x, lower, upper, color=band_orange, alpha=0.35,
+                    linewidth=0, label='±1σ range', zorder=2)
+    for edge in (lower, upper):
+        ax.plot(x, edge, color=band_orange, linewidth=1, alpha=0.5,
+                solid_capstyle='round', zorder=2)
+
+    # Neon glow mean line: layered strokes with increasing width and low alpha
+    for lw, alpha in [(10, 0.06), (7, 0.1), (4.5, 0.18)]:
+        ax.plot(x, mean, color=line_pink, linewidth=lw, alpha=alpha,
+                solid_capstyle='round', zorder=3)
+    ax.plot(x, mean, color=line_pink, linewidth=2, alpha=0.95, label='Daily mean',
+            solid_capstyle='round', zorder=4)
+
+    if lower.min() < 0:
+        ax.axhline(0, color=title_cyan, alpha=0.5, linewidth=1, zorder=1)
+
+    ax.set_xlim(x[0], x[-1])
+    ax.set_ylim(y_bottom, y_top)
+
+    locator = mdates.AutoDateLocator()
+    ax.xaxis.set_major_locator(locator)
+    ax.xaxis.set_major_formatter(mdates.ConciseDateFormatter(locator))
+    ax.tick_params(colors=text_light)
+    plt.setp(ax.get_xticklabels(), color=text_light)
+    for spine in ax.spines.values():
+        spine.set_color(grid_pink)
+        spine.set_alpha(0.4)
+
+    glow = [path_effects.withStroke(linewidth=3, foreground=grid_pink, alpha=0.6)]
+    title = ax.set_title('German Electricity Spot Prices — Daily Distribution', fontsize=20,
+                         fontweight='bold', fontstyle='italic', pad=20, color=title_cyan)
+    title.set_path_effects(glow)
+    ax.set_xlabel('Date', fontsize=13, fontweight='bold', color=text_light)
+    ax.set_ylabel('Price (ct/kWh)', fontsize=13, fontweight='bold', color=text_light)
+    plt.setp(ax.get_yticklabels(), color=text_light)
+
+    ax.legend(loc='upper left', fontsize=11, framealpha=0.6,
+              facecolor=bg_dark, edgecolor=grid_pink, labelcolor=text_light)
+
+    plt.tight_layout()
+    plt.savefig(plot_path, dpi=300, bbox_inches='tight', facecolor=bg_dark)
+
+    with open(hash_path, 'w') as f:
+        f.write(data_hash)
+
+    ic("Futuristic distribution plot regenerated")
+
+
 def main():
     parser = argparse.ArgumentParser(description='Fetch German electricity spot prices and plot them.')
     parser.add_argument('-f', '--futuristic', action='store_true',
@@ -330,11 +494,15 @@ def main():
     DB_PATH = "energy_prices.db"
 
     dates_data = get_price_data(DB_PATH)
+    daily_stats = load_daily_price_stats(DB_PATH)
 
     if args.futuristic:
         generate_futuristic_plot(dates_data, 'dual_timeline_plot_futuristic.png', '.plot_hash_futuristic')
+        generate_futuristic_distribution_plot(daily_stats, 'price_distribution_futuristic.png',
+                                              '.dist_hash_futuristic')
     else:
         generate_plot(dates_data, 'dual_timeline_plot.png', '.plot_hash')
+        generate_distribution_plot(daily_stats, 'price_distribution.png', '.dist_hash')
 
 
 def get_current_electricity_price(davis_token):
