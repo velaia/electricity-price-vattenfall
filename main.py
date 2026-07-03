@@ -190,6 +190,33 @@ def stats_hash_data(stats: pd.DataFrame) -> dict:
             for d, m, s in zip(stats['date'], stats['mean'], stats['std'])}
 
 
+def load_hourly_price_stats(db_path: str) -> pd.DataFrame:
+    """Compute per-interval mean and standard deviation across all stored days."""
+    conn = sqlite3.connect(db_path)
+    try:
+        df = pd.read_sql_query(
+            'SELECT i.interval_index, i.price_netto FROM price_intervals i',
+            conn)
+    finally:
+        conn.close()
+
+    # interval_index is stored in Vattenfall HHMM format (0, 15, ..., 2345);
+    # map it to a sequential 0-95 position so the hour axis is uniform
+    df['interval_index'] = (df['interval_index'] // 100) * 4 + (df['interval_index'] % 100) // 15
+
+    stats = df.groupby('interval_index')['price_netto'].agg(['mean', 'std']).reset_index()
+    stats['std'] = stats['std'].fillna(0.0)
+    stats = stats.sort_values('interval_index')
+    ic(f"Loaded hourly profile stats for {len(stats)} intervals")
+    return stats
+
+
+def hourly_stats_hash_data(stats: pd.DataFrame) -> dict:
+    """Serializable view of the hourly profile stats, for plot change detection."""
+    return {str(i): [m, s]
+            for i, m, s in zip(stats['interval_index'], stats['mean'], stats['std'])}
+
+
 def plot_is_current(dates_data: dict, plot_path: str, hash_path: str) -> str:
     """Return the data hash, or None if the existing plot already matches it."""
     data_hash = hashlib.md5(json.dumps(dates_data, sort_keys=True).encode()).hexdigest()
@@ -320,6 +347,60 @@ def generate_distribution_plot(stats: pd.DataFrame, plot_path: str, hash_path: s
         f.write(data_hash)
 
     ic("Distribution plot regenerated")
+
+
+def generate_hourly_profile_plot(stats: pd.DataFrame, plot_path: str, hash_path: str) -> None:
+    """Generate the classic seaborn hourly profile plot (per-interval mean over all days with a ±1 sigma band)."""
+    data_hash = plot_is_current(hourly_stats_hash_data(stats), plot_path, hash_path)
+    if data_hash is None:
+        ic("Hourly profile plot is up to date, skipping regeneration")
+        return
+
+    x = stats['interval_index'].values
+    lower = stats['mean'] - stats['std']
+    upper = stats['mean'] + stats['std']
+    lower2 = stats['mean'] - 2 * stats['std']
+    upper2 = stats['mean'] + 2 * stats['std']
+
+    plt.figure(figsize=(14, 7))
+    sns.set_style("whitegrid")
+    ax = plt.gca()
+
+    color = sns.color_palette('Set1')[1]
+    ax.fill_between(x, lower2, upper2, color=color, alpha=0.25,
+                    linewidth=0, label='±2σ range')
+    ax.fill_between(x, lower, upper, color=color, alpha=0.5,
+                    linewidth=0, label='±1σ range')
+    ax.plot(x, stats['mean'], color=color, linewidth=2.5,
+            alpha=0.9, label='Mean over all days')
+
+    # Spot prices can go negative, so only pin the bottom at 0 when the band stays above it
+    plt.ylim(bottom=min(0, lower2.min() * 1.1), top=upper2.max() * 1.1)
+    if lower2.min() < 0:
+        ax.axhline(0, color='black', alpha=0.4, linewidth=1)
+    plt.xlim(x[0], x[-1])
+
+    set_hourly_ticks(ax, len(stats))
+
+    plt.title('German Electricity Spot Prices — Hourly Profile',
+              fontsize=18, fontweight='bold', pad=20)
+    plt.xlabel('Hour of Day', fontsize=13, fontweight='bold')
+    plt.ylabel('Price (ct/kWh)', fontsize=13, fontweight='bold')
+
+    ax.grid(True, alpha=0.3, linestyle='--', linewidth=0.7)
+    ax.set_axisbelow(True)
+
+    plt.legend(loc='upper left', fontsize=11, framealpha=0.95)
+
+    ax.set_facecolor('#f8f9fa')
+
+    plt.tight_layout()
+    plt.savefig(plot_path, dpi=300, bbox_inches='tight', facecolor='white')
+
+    with open(hash_path, 'w') as f:
+        f.write(data_hash)
+
+    ic("Hourly profile plot regenerated")
 
 
 def generate_futuristic_plot(dates_data: dict, plot_path: str, hash_path: str) -> None:
@@ -485,6 +566,99 @@ def generate_futuristic_distribution_plot(stats: pd.DataFrame, plot_path: str, h
     ic("Futuristic distribution plot regenerated")
 
 
+def generate_futuristic_hourly_profile_plot(stats: pd.DataFrame, plot_path: str, hash_path: str) -> None:
+    """Generate a synthwave/retro-future hourly profile plot (per-interval mean over all days with a ±1 sigma band)."""
+    data_hash = plot_is_current(hourly_stats_hash_data(stats), plot_path, hash_path)
+    if data_hash is None:
+        ic("Futuristic hourly profile plot is up to date, skipping regeneration")
+        return
+
+    bg_dark = '#0d0221'
+    bg_purple = '#2b0a4e'
+    line_pink = '#ff2975'
+    band_orange = '#ff9e00'
+    grid_pink = '#ff2975'
+    text_light = '#f0e6ff'
+    title_cyan = '#9df9ff'
+
+    x = stats['interval_index'].values
+    mean = stats['mean'].values
+    lower = mean - stats['std'].values
+    upper = mean + stats['std'].values
+    lower2 = mean - 2 * stats['std'].values
+    upper2 = mean + 2 * stats['std'].values
+
+    num_intervals = len(stats)
+    y_top = upper2.max() * 1.1
+    y_bottom = min(0, lower2.min() * 1.1)
+
+    fig, ax = plt.subplots(figsize=(14, 7))
+    fig.patch.set_facecolor(bg_dark)
+
+    # Vertical purple-to-black gradient background
+    gradient = np.linspace(0, 1, 256).reshape(-1, 1)
+    bg_cmap = LinearSegmentedColormap.from_list('synthwave_bg', [bg_purple, bg_dark])
+    ax.imshow(gradient, aspect='auto', cmap=bg_cmap,
+              extent=[-0.5, num_intervals - 0.5, y_bottom, y_top], zorder=0)
+
+    # Retro grid: horizontal lines more prominent than vertical
+    ax.grid(False)
+    for y in np.linspace(y_bottom, y_top, 12):
+        ax.axhline(y, color=grid_pink, alpha=0.18, linewidth=0.9, zorder=1)
+    for xv in range(0, num_intervals, 4):
+        ax.axvline(xv, color=grid_pink, alpha=0.08, linewidth=0.7, zorder=1)
+
+    # Sigma bands as glowing sunset-orange areas with faint edge lines
+    ax.fill_between(x, lower2, upper2, color=band_orange, alpha=0.18,
+                    linewidth=0, label='±2σ range', zorder=2)
+    for edge in (lower2, upper2):
+        ax.plot(x, edge, color=band_orange, linewidth=1, alpha=0.3,
+                solid_capstyle='round', zorder=2)
+    ax.fill_between(x, lower, upper, color=band_orange, alpha=0.35,
+                    linewidth=0, label='±1σ range', zorder=2)
+    for edge in (lower, upper):
+        ax.plot(x, edge, color=band_orange, linewidth=1, alpha=0.5,
+                solid_capstyle='round', zorder=2)
+
+    # Neon glow mean line: layered strokes with increasing width and low alpha
+    for lw, alpha in [(10, 0.06), (7, 0.1), (4.5, 0.18)]:
+        ax.plot(x, mean, color=line_pink, linewidth=lw, alpha=alpha,
+                solid_capstyle='round', zorder=3)
+    ax.plot(x, mean, color=line_pink, linewidth=2, alpha=0.95,
+            label='Mean over all days', solid_capstyle='round', zorder=4)
+
+    if lower2.min() < 0:
+        ax.axhline(0, color=title_cyan, alpha=0.5, linewidth=1, zorder=1)
+
+    ax.set_xlim(-0.5, num_intervals - 0.5)
+    ax.set_ylim(y_bottom, y_top)
+
+    set_hourly_ticks(ax, num_intervals, color=text_light)
+    ax.tick_params(colors=text_light)
+    for spine in ax.spines.values():
+        spine.set_color(grid_pink)
+        spine.set_alpha(0.4)
+
+    glow = [path_effects.withStroke(linewidth=3, foreground=grid_pink, alpha=0.6)]
+    title = ax.set_title('German Electricity Spot Prices — Hourly Profile', fontsize=20,
+                         fontweight='bold', fontstyle='italic', pad=20, color=title_cyan)
+    title.set_path_effects(glow)
+    ax.set_xlabel('Hour of Day', fontsize=13, fontweight='bold', color=text_light)
+    ax.set_ylabel('Price (ct/kWh)', fontsize=13, fontweight='bold', color=text_light)
+    plt.setp(ax.get_yticklabels(), color=text_light)
+
+    ax.legend(loc='upper left', fontsize=11, framealpha=0.6,
+              facecolor=bg_dark, edgecolor=grid_pink, labelcolor=text_light)
+
+    plt.tight_layout()
+    plt.savefig(plot_path, dpi=300, bbox_inches='tight', facecolor=bg_dark)
+
+    with open(hash_path, 'w') as f:
+        f.write(data_hash)
+
+    ic("Futuristic hourly profile plot regenerated")
+
+
 def main():
     parser = argparse.ArgumentParser(description='Fetch German electricity spot prices and plot them.')
     parser.add_argument('-f', '--futuristic', action='store_true',
@@ -495,14 +669,18 @@ def main():
 
     dates_data = get_price_data(DB_PATH)
     daily_stats = load_daily_price_stats(DB_PATH)
+    hourly_stats = load_hourly_price_stats(DB_PATH)
 
     if args.futuristic:
         generate_futuristic_plot(dates_data, 'dual_timeline_plot_futuristic.png', '.plot_hash_futuristic')
         generate_futuristic_distribution_plot(daily_stats, 'price_distribution_futuristic.png',
                                               '.dist_hash_futuristic')
+        generate_futuristic_hourly_profile_plot(hourly_stats, 'price_hourly_profile_futuristic.png',
+                                                '.hourly_hash_futuristic')
     else:
         generate_plot(dates_data, 'dual_timeline_plot.png', '.plot_hash')
         generate_distribution_plot(daily_stats, 'price_distribution.png', '.dist_hash')
+        generate_hourly_profile_plot(hourly_stats, 'price_hourly_profile.png', '.hourly_hash')
 
 
 def get_current_electricity_price(davis_token):
