@@ -4,56 +4,76 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Project Overview
 
-This is a Python script that fetches German electricity spot prices from the Vattenfall Davis API and generates a visualization showing today's and tomorrow's hourly prices. The program outputs a PNG chart showing price trends over 24 hours for up to 2 days.
+This repository fetches German electricity spot prices from the Vattenfall Davis API and provides several ways to consume them:
+
+- **`main.py`** — fetches 15-minute spot prices (ct/kWh) for today and tomorrow, caches them in SQLite, and renders charts (classic seaborn or synthwave "futuristic" style).
+- **`mqtt_publisher.py`** — long-running daemon that publishes price metrics to Home Assistant via MQTT Discovery, updating on every 15-minute boundary.
+- **`mcp_server.py`** — MCP server exposing the price chart and raw data as tools.
+- **`ollama_chat.py`** — chat client that lets a local Ollama model call the MCP server's tools.
 
 ## Development Commands
 
-### Running the Application
+### Fetch prices and generate plots
 
 ```bash
 uv run main.py
 ```
 
-This command:
-- Creates/uses a virtual environment automatically
-- Installs dependencies from `pyproject.toml` and `uv.lock`
-- Executes the main script
-- Generates `dual_timeline_plot.png` in the project root
+Generates three plots in the project root (classic style):
+- `dual_timeline_plot.png` — today's and tomorrow's hourly prices
+- `price_distribution.png` — daily mean with ±1σ band
+- `price_hourly_profile.png` — per-interval mean over all days with ±1σ/±2σ bands
 
-### Docker Build
+Add `-f`/`--futuristic` for the synthwave variants (`*_futuristic.png`).
+
+### Publish to Home Assistant via MQTT
+
+```bash
+uv run mqtt_publisher.py
+```
+
+Requires `MQTT_HOST` (see `.env.example`). Runs forever, publishing on every 15-minute boundary.
+
+### MCP server
+
+```bash
+uv run mcp_server.py            # streamable-http transport (default)
+uv run mcp_server.py --stdio    # stdio transport
+```
+
+### Chat with Ollama through the MCP server
+
+```bash
+uv run mcp_server.py            # terminal 1
+uv run ollama_chat.py           # terminal 2 (needs Ollama running with gemma4)
+```
+
+### Tests
+
+```bash
+uv run pytest
+```
+
+### Docker
 
 ```bash
 docker build -t vattenfall-prices-germany:0.1 .
-```
-
-### Docker Run
-
-```bash
 docker run vattenfall-prices-germany:0.1
 ```
 
 ## Architecture
 
-### Single-File Application
+### Data Flow
 
-This is a simple single-file Python application (`main.py`) with no complex module structure. All functionality is contained in one file with three main functions.
+1. **Authentication**: `get_davis_token()` obtains an anonymous access token from Vattenfall's Davis API. No user credentials needed; the token is temporary and used for the session.
+2. **Data Retrieval**: `get_current_electricity_price(davis_token)` fetches 15-minute spot prices (`Typ: "15MIN_STROM"`). The API returns today's and tomorrow's prices (tomorrow available after ~noon).
+3. **Caching**: `get_price_data(db_path)` stores each day's prices in SQLite (`energy_prices.db`) and only calls the API when today's or tomorrow's data is missing.
+4. **Visualization**: `main()` loads cached data plus per-day and per-interval statistics, then generates the plots.
 
-### API Flow
+### SQLite Schema
 
-1. **Authentication**: `get_davis_token()` obtains an anonymous access token from Vattenfall's Davis API
-   - No user credentials needed
-   - Token is temporary and used for the session
-
-2. **Data Retrieval**: `get_current_electricity_price(davis_token)` fetches spot prices
-   - Requests 15-minute interval data (`Typ: "15MIN_STROM"`)
-   - API returns both today and tomorrow's prices (tomorrow available after noon)
-   - Data structure: JSON with nested `Result.Tage` array containing daily price data
-
-3. **Visualization**: `main()` orchestrates the flow and generates the plot
-   - Uses pandas DataFrame for data manipulation
-   - Extracts `WerteNetto` (net prices in ct/kWh) from each day
-   - Creates a dual-line seaborn plot comparing days
-   - Saves as `dual_timeline_plot.png` at 300 DPI
+- `price_days` — one row per date (`date` UNIQUE, `fetched_at`)
+- `price_intervals` — one row per 15-minute interval (`day_id` FK, `interval_index`, `price_netto`)
 
 ### Data Structure
 
@@ -62,19 +82,40 @@ The API returns prices in this structure:
 Result.Tage[
   {
     "Datum": "YYYY-MM-DD",
-    "WerteBrutto": {hourly dict},
-    "WerteNetto": {hourly dict}  # Used for plotting
+    "WerteBrutto": {HHMM: price},
+    "WerteNetto": {HHMM: price}  # Used for storage/plotting
   }
 ]
 ```
 
-Each `WerteNetto` dict has keys "0" through "23" representing hours, with values as floats (ct/kWh).
+Each `WerteNetto` dict uses HHMM-style keys ("0", "15", "30", "45", "100", ..., "2345") — 96 intervals per day. `get_price_data()` returns `{date_str: {key: price}}`.
 
-### Dependencies
+### Plot Change Detection
+
+Each plot has a companion hash file (`.plot_hash`, `.dist_hash`, `.hourly_hash`, plus `_futuristic` variants). `plot_is_current()` skips regeneration when the data hash matches the stored one.
+
+### MQTT Publisher
+
+- Publishes 8 sensors via Home Assistant MQTT Discovery: current price, next-hour price, today min/max/avg, tomorrow min/max/avg.
+- Updates on every 15-minute wall-clock boundary (`seconds_until_next_boundary`).
+- Config via environment variables (`MQTT_HOST`, `MQTT_PORT`, `MQTT_USER`, `MQTT_PASS`), loaded from `.env`.
+- Registers a Last Will so the broker publishes `offline` to the availability topic if the process dies.
+
+### MCP Server
+
+- `get_price_chart` — returns the `dual_timeline_plot.png` image (regenerates it first).
+- `get_price_data` — returns today's/tomorrow's prices as a text table (no chart).
+
+## Dependencies
 
 - `requests`: HTTP client for Vattenfall API calls
-- `matplotlib` + `seaborn`: Plotting and visualization with seaborn theme
-- `pandas`: DataFrame manipulation for plotting
+- `matplotlib` + `seaborn`: Plotting and visualization
+- `pandas` + `numpy`: Data manipulation
+- `sqlite3` (stdlib): Local price cache
+- `paho-mqtt`: MQTT publishing for Home Assistant
+- `mcp[cli]`: MCP server framework
+- `ollama`: Ollama chat client
+- `python-dotenv`: `.env` config loading
 - `icecream`: Debug printing (used throughout for development visibility)
 
 ## Key Implementation Details
@@ -87,7 +128,7 @@ Each `WerteNetto` dict has keys "0" through "23" representing hours, with values
 
 ### Plot Characteristics
 
-- Y-axis starts at 0 for price comparisons
+- Y-axis starts at 0 for price comparisons (except when prices go negative)
 - X-axis shows hours 0-23 (24-hour format)
 - Automatically handles 1 or 2 days of data
 - Output saved in project root, not `static/` directory
