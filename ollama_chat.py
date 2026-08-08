@@ -15,7 +15,7 @@ from pathlib import Path
 
 import ollama
 from mcp import ClientSession
-from mcp.client.streamable_http import streamablehttp_client
+from mcp.client.streamable_http import streamable_http_client
 
 MCP_SERVER_URL = "http://localhost:8000/mcp/"
 OLLAMA_MODEL = "gemma4"
@@ -101,9 +101,11 @@ async def chat_loop(session: ClientSession, ollama_tools: list[dict]):
 async def main():
     print(f"Connecting to MCP server at {MCP_SERVER_URL} ...")
 
-    async with streamablehttp_client(MCP_SERVER_URL) as (read, write, _):
+    async with streamable_http_client(MCP_SERVER_URL) as (read, write):
         async with ClientSession(read, write) as session:
-            await session.initialize()
+            # Modern-era (2026-07-28) connection: probe server/discover
+            # instead of the legacy initialize handshake.
+            await session.discover()
 
             mcp_tools = await session.list_tools()
             ollama_tools = mcp_tools_to_ollama(mcp_tools)

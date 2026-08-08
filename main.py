@@ -659,11 +659,14 @@ def generate_futuristic_hourly_profile_plot(stats: pd.DataFrame, plot_path: str,
     ic("Futuristic hourly profile plot regenerated")
 
 
-def main():
+def main(argv=None):
     parser = argparse.ArgumentParser(description='Fetch German electricity spot prices and plot them.')
     parser.add_argument('-f', '--futuristic', action='store_true',
                         help='Render the plot in a synthwave/retro-future style')
-    args = parser.parse_args()
+    # parse_args(None) reads sys.argv[1:], preserving CLI behavior; callers
+    # that run main() as a library (e.g. the MCP chart tool) pass argv=[]
+    # so unrelated process args like --stdio don't trip argparse.
+    args = parser.parse_args(argv)
 
     DB_PATH = "energy_prices.db"
 

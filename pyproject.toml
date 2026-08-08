@@ -7,7 +7,7 @@ requires-python = ">=3.12,<3.13"
 dependencies = [
     "icecream>=2.2.0",
     "matplotlib>=3.10.9",
-    "mcp[cli]>=1.0.0",
+    "mcp[cli]>=2.0.0",
     "ollama>=0.6.2",
     "paho-mqtt>=2.1.0",
     "python-dotenv>=1.0.1",
