@@ -30,7 +30,7 @@ def mcp_tools_to_ollama(mcp_tools) -> list[dict]:
             "function": {
                 "name": tool.name,
                 "description": tool.description,
-                "parameters": tool.inputSchema,
+                "parameters": tool.input_schema,
             },
         }
         for tool in mcp_tools.tools
