@@ -1,6 +1,6 @@
 # Strom Börsenpreis
 
-Get current German electricity prices from [Vattenfall Börsenpreise](https://www.vattenfall.de/strom/tarife/oekostrom-dynamik-boersenpreise) and consume them as charts, Home Assistant sensors, or via an MCP server.
+Get current German electricity prices from [Vattenfall Börsenpreise](https://www.vattenfall.de/strom/tarife/oekostrom-dynamik-boersenpreise) — plus day-ahead prices for Germany's neighbors from [energy-charts.info](https://www.energy-charts.info) — and consume them as charts, Home Assistant sensors, or via an MCP server.
 
 Tomorrow's prices are published between noon and 3 PM each day and are not visible in the web UI of Vattenfall. But the API provides them, so they will appear in this app.
 
@@ -10,6 +10,7 @@ Tomorrow's prices are published between noon and 3 PM each day and are not visib
 ## Features
 
 - Fetches 15-minute spot prices (ct/kWh) for today and tomorrow
+- Covers Germany (Vattenfall API) plus FR, NL, BE, AT, CH, PL, CZ, DK (energy-charts.info, no API key needed)
 - Caches prices in SQLite (`energy_prices.db`) so the API is only called when data is missing
 - Renders charts in two styles: classic seaborn and synthwave "futuristic"
 - Publishes price sensors to Home Assistant via MQTT Discovery
@@ -31,6 +32,30 @@ Generates three plots in the project root:
 - `price_hourly_profile.png` — per-interval mean over all days with ±1σ/±2σ bands
 
 Add `-f`/`--futuristic` for the synthwave variants.
+
+### European countries
+
+Pass `-c`/`--country` to chart day-ahead prices for any supported market (default `DE`):
+
+```commandline
+uv run main.py -c FR
+uv run main.py -c DK
+```
+
+Supported countries: `DE`, `FR`, `NL`, `BE`, `AT`, `CH`, `PL`, `CZ`, `DK`. Non-DE data comes from [energy-charts.info](https://www.energy-charts.info) (Fraunhofer ISE) — no registration or API key required. `DK` uses the DK1 bidding zone (Jutland, coupled with Germany). Prices are cached per country in the same SQLite database.
+
+Non-DE runs write country-suffixed files, e.g. `dual_timeline_plot_fr.png`, `price_distribution_fr.png`, `price_hourly_profile_fr.png` (plus `_futuristic` variants with `-f`).
+
+### Comparison chart
+
+Pass `--compare` to render a single chart comparing the **top 5 countries by population** (DE, FR, PL, NL, BE):
+
+```commandline
+uv run main.py --compare
+uv run main.py --compare -f   # synthwave variant
+```
+
+Each country gets its own color; today's line is solid, tomorrow's is dashed in a lighter shade of the same color. Legend shows all 10 series (5 countries × today/tomorrow). Output: `comparison_plot.png` or `comparison_plot_futuristic.png`.
 
 ### Home Assistant (MQTT)
 

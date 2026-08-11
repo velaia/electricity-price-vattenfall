@@ -7,14 +7,27 @@ import pandas as pd
 from matplotlib import pyplot as plt
 import matplotlib.dates as mdates
 import matplotlib.patheffects as path_effects
-from matplotlib.colors import LinearSegmentedColormap
+from matplotlib.colors import LinearSegmentedColormap, to_rgb
 from datetime import date, datetime, timedelta
 from icecream import ic
 import sqlite3
 import hashlib
 import os
 
+from energy_charts_client import fetch_day_ahead_prices
+
 sns.set_theme()
+
+# Top 5 supported markets by population: DE, FR, PL, NL, BE (same as the top 5
+# by electricity consumption). Used by the --compare chart.
+TOP5_COUNTRIES = ['DE', 'FR', 'PL', 'NL', 'BE']
+TOMORROW_LIGHTEN = 0.5  # blend toward white for the tomorrow line of each country
+
+
+def lighten_color(color, amount: float = TOMORROW_LIGHTEN):
+    """Blend a matplotlib color toward white; amount=1 returns white."""
+    r, g, b = to_rgb(color)
+    return (r + (1 - r) * amount, g + (1 - g) * amount, b + (1 - b) * amount)
 
 
 def init_database(db_path: str) -> None:
@@ -22,12 +35,54 @@ def init_database(db_path: str) -> None:
     conn = sqlite3.connect(db_path)
     cursor = conn.cursor()
 
+    # Migrate the legacy (pre-country) schema if present: price_days.date was
+    # UNIQUE, which can only hold one market. Recreate both tables so the
+    # price_intervals FK stays intact, copying rows with country='DE'.
+    cols = {row[1] for row in cursor.execute('PRAGMA table_info(price_days)')}
+    if cols and 'country' not in cols:
+        ic("Migrating legacy price_days schema (adding country/granularity)")
+        cursor.execute('ALTER TABLE price_days RENAME TO price_days_old')
+        cursor.execute('ALTER TABLE price_intervals RENAME TO price_intervals_old')
+        cursor.execute('''
+            CREATE TABLE price_days (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                date TEXT NOT NULL,
+                country TEXT NOT NULL DEFAULT 'DE',
+                granularity TEXT NOT NULL DEFAULT '15MIN',
+                fetched_at TEXT NOT NULL,
+                UNIQUE (country, date)
+            )
+        ''')
+        cursor.execute('''
+            CREATE TABLE price_intervals (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                day_id INTEGER NOT NULL,
+                interval_index INTEGER NOT NULL,
+                price_netto REAL NOT NULL,
+                FOREIGN KEY (day_id) REFERENCES price_days (id),
+                UNIQUE (day_id, interval_index)
+            )
+        ''')
+        cursor.execute('''
+            INSERT INTO price_days (id, date, country, granularity, fetched_at)
+            SELECT id, date, 'DE', '15MIN', fetched_at FROM price_days_old
+        ''')
+        cursor.execute('''
+            INSERT INTO price_intervals (id, day_id, interval_index, price_netto)
+            SELECT id, day_id, interval_index, price_netto FROM price_intervals_old
+        ''')
+        cursor.execute('DROP TABLE price_intervals_old')
+        cursor.execute('DROP TABLE price_days_old')
+
     # Create price_days table
     cursor.execute('''
         CREATE TABLE IF NOT EXISTS price_days (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
-            date TEXT UNIQUE NOT NULL,
-            fetched_at TEXT NOT NULL
+            date TEXT NOT NULL,
+            country TEXT NOT NULL DEFAULT 'DE',
+            granularity TEXT NOT NULL DEFAULT '15MIN',
+            fetched_at TEXT NOT NULL,
+            UNIQUE (country, date)
         )
     ''')
 
@@ -48,19 +103,21 @@ def init_database(db_path: str) -> None:
     ic(f"Database initialized at {db_path}")
 
 
-def date_exists_in_db(db_path: str, date_str: str) -> bool:
-    """Check if a date already exists in the database."""
+def date_exists_in_db(db_path: str, date_str: str, country: str = "DE") -> bool:
+    """Check if a date already exists in the database for a country."""
     conn = sqlite3.connect(db_path)
     cursor = conn.cursor()
 
-    cursor.execute('SELECT COUNT(*) FROM price_days WHERE date = ?', (date_str,))
+    cursor.execute('SELECT COUNT(*) FROM price_days WHERE date = ? AND country = ?',
+                   (date_str, country))
     count = cursor.fetchone()[0]
 
     conn.close()
     return count > 0
 
 
-def store_price_data(db_path: str, date_str: str, price_values: dict) -> None:
+def store_price_data(db_path: str, date_str: str, price_values: dict,
+                     country: str = "DE", granularity: str = "15MIN") -> None:
     """Store price data for a specific date in the database."""
     conn = sqlite3.connect(db_path)
     cursor = conn.cursor()
@@ -69,8 +126,8 @@ def store_price_data(db_path: str, date_str: str, price_values: dict) -> None:
         # Insert into price_days table
         fetched_at = datetime.now().isoformat()
         cursor.execute(
-            'INSERT INTO price_days (date, fetched_at) VALUES (?, ?)',
-            (date_str, fetched_at)
+            'INSERT INTO price_days (date, country, granularity, fetched_at) VALUES (?, ?, ?, ?)',
+            (date_str, country, granularity, fetched_at)
         )
         day_id = cursor.lastrowid
 
@@ -91,14 +148,15 @@ def store_price_data(db_path: str, date_str: str, price_values: dict) -> None:
         conn.close()
 
 
-def load_price_data(db_path: str, date_str: str) -> dict:
+def load_price_data(db_path: str, date_str: str, country: str = "DE") -> dict:
     """Load price data for a specific date from the database."""
     conn = sqlite3.connect(db_path)
     cursor = conn.cursor()
 
     try:
         # Get day_id for the date
-        cursor.execute('SELECT id FROM price_days WHERE date = ?', (date_str,))
+        cursor.execute('SELECT id FROM price_days WHERE date = ? AND country = ?',
+                       (date_str, country))
         result = cursor.fetchone()
 
         if result is None:
@@ -121,11 +179,24 @@ def load_price_data(db_path: str, date_str: str) -> dict:
         conn.close()
 
 
-def get_price_data(db_path: str = "energy_prices.db") -> dict[str, dict]:
+def country_granularity(country: str) -> str:
+    """Return the stored granularity for a country's price data.
+
+    All current markets are 15-minute; 'HOURLY' is reserved for historical
+    data (pre-2025-10-01) as future-proofing.
+    """
+    return '15MIN'
+
+
+def get_price_data(db_path: str = "energy_prices.db", country: str = "DE") -> dict[str, dict]:
     """Fetch price data for today and tomorrow (from cache or API).
 
     Returns a dict mapping date strings to their price dicts,
     e.g. {"2026-04-12": {"0": 5.12, "1": 4.98, ...}, ...}
+
+    For DE this uses the Vattenfall Davis API (both days in one call). For
+    other countries it fetches day-ahead prices from energy-charts.info per
+    date, degrading gracefully when a date (e.g. tomorrow) isn't published yet.
     """
     init_database(db_path)
 
@@ -134,45 +205,60 @@ def get_price_data(db_path: str = "energy_prices.db") -> dict[str, dict]:
     today_str = today.strftime("%Y-%m-%d")
     tomorrow_str = tomorrow.strftime("%Y-%m-%d")
 
-    today_data = load_price_data(db_path, today_str)
-    tomorrow_data = load_price_data(db_path, tomorrow_str)
+    today_data = load_price_data(db_path, today_str, country)
+    tomorrow_data = load_price_data(db_path, tomorrow_str, country)
 
     dates_data = {}
 
     if today_data is not None:
         dates_data[today_str] = today_data
-        ic(f"Using cached data for {today_str}")
+        ic(f"Using cached data for {today_str} ({country})")
 
     if tomorrow_data is not None:
         dates_data[tomorrow_str] = tomorrow_data
-        ic(f"Using cached data for {tomorrow_str}")
+        ic(f"Using cached data for {tomorrow_str} ({country})")
 
-    if today_data is None or tomorrow_data is None:
-        ic("Fetching missing data from API")
-        davis_token = get_davis_token()
-        response_json = get_current_electricity_price(davis_token)
-        ic(response_json)
+    if country == "DE":
+        if today_data is None or tomorrow_data is None:
+            ic("Fetching missing data from API")
+            davis_token = get_davis_token()
+            response_json = get_current_electricity_price(davis_token)
+            ic(response_json)
 
-        for tag in response_json['Result']['Tage']:
-            date_str = tag['Datum']
-            if date_str not in dates_data:
-                if not date_exists_in_db(db_path, date_str):
-                    store_price_data(db_path, date_str, tag['WerteNetto'])
-                dates_data[date_str] = tag['WerteNetto']
+            for tag in response_json['Result']['Tage']:
+                date_str = tag['Datum']
+                if date_str not in dates_data:
+                    if not date_exists_in_db(db_path, date_str, country):
+                        store_price_data(db_path, date_str, tag['WerteNetto'], country)
+                    dates_data[date_str] = tag['WerteNetto']
+        else:
+            ic("All data available in database, skipping API call")
     else:
-        ic("All data available in database, skipping API call")
+        for date_str in (today_str, tomorrow_str):
+            if date_str in dates_data:
+                continue
+            try:
+                fetched = fetch_day_ahead_prices(country, date_str, date_str)
+            except Exception as e:
+                ic(f"energy-charts fetch failed for {country} {date_str}: {e}")
+                continue
+            if date_str in fetched:
+                if not date_exists_in_db(db_path, date_str, country):
+                    store_price_data(db_path, date_str, fetched[date_str], country)
+                dates_data[date_str] = fetched[date_str]
 
     return dates_data
 
 
-def load_daily_price_stats(db_path: str) -> pd.DataFrame:
-    """Load all stored days and compute per-day mean and standard deviation."""
+def load_daily_price_stats(db_path: str, country: str = "DE") -> pd.DataFrame:
+    """Load all stored days for a country and compute per-day mean and std."""
     conn = sqlite3.connect(db_path)
     try:
         df = pd.read_sql_query(
             'SELECT d.date, i.price_netto '
-            'FROM price_days d JOIN price_intervals i ON i.day_id = d.id',
-            conn)
+            'FROM price_days d JOIN price_intervals i ON i.day_id = d.id '
+            'WHERE d.country = ?',
+            conn, params=(country,))
     finally:
         conn.close()
 
@@ -190,19 +276,32 @@ def stats_hash_data(stats: pd.DataFrame) -> dict:
             for d, m, s in zip(stats['date'], stats['mean'], stats['std'])}
 
 
-def load_hourly_price_stats(db_path: str) -> pd.DataFrame:
-    """Compute per-interval mean and standard deviation across all stored days."""
+def interval_to_position(interval_index: int, granularity: str) -> int:
+    """Map a stored interval index (HHMM-style) to a sequential position.
+
+    15-min data: 0, 15, ..., 2345 -> 0..95. Hourly data: 0, 100, ..., 2300 -> 0..23.
+    """
+    if granularity == 'HOURLY':
+        return interval_index // 100
+    return (interval_index // 100) * 4 + (interval_index % 100) // 15
+
+
+def load_hourly_price_stats(db_path: str, country: str = "DE") -> pd.DataFrame:
+    """Compute per-interval mean and std across all stored days for a country."""
     conn = sqlite3.connect(db_path)
     try:
         df = pd.read_sql_query(
-            'SELECT i.interval_index, i.price_netto FROM price_intervals i',
-            conn)
+            'SELECT i.interval_index, i.price_netto '
+            'FROM price_intervals i JOIN price_days d ON i.day_id = d.id '
+            'WHERE d.country = ?',
+            conn, params=(country,))
     finally:
         conn.close()
 
-    # interval_index is stored in Vattenfall HHMM format (0, 15, ..., 2345);
-    # map it to a sequential 0-95 position so the hour axis is uniform
-    df['interval_index'] = (df['interval_index'] // 100) * 4 + (df['interval_index'] % 100) // 15
+    # interval_index is stored in HHMM format (0, 15, ..., 2345); map it to a
+    # sequential position so the hour axis is uniform for the country's granularity
+    df['interval_index'] = df['interval_index'].apply(
+        lambda idx: interval_to_position(idx, country_granularity(country)))
 
     stats = df.groupby('interval_index')['price_netto'].agg(['mean', 'std']).reset_index()
     stats['std'] = stats['std'].fillna(0.0)
@@ -237,9 +336,33 @@ def build_dataframe(dates_data: dict) -> pd.DataFrame:
                         index=dates_list)
 
 
-def set_hourly_ticks(ax, num_intervals: int, fontsize: int = 10, color: str = None):
-    """Show only hourly labels (every 4th tick for 15-minute data)."""
-    intervals_per_hour = 4  # 15-minute intervals
+def comparison_series(countries_data: dict, today_str: str, tomorrow_str: str) -> list[dict]:
+    """Build plot-ready series for every country x day that has data.
+
+    countries_data maps country code to {date_str: {HHMM_key: price_ct}}.
+    Returns [{country, day ('today'|'tomorrow'), x: [0..95], y: [price_ct]}],
+    sorted by country, skipping a country's tomorrow when it isn't published yet.
+    """
+    series = []
+    for country in sorted(countries_data):
+        dates_data = countries_data[country]
+        for day, date_str in (('today', today_str), ('tomorrow', tomorrow_str)):
+            prices = dates_data.get(date_str)
+            if not prices:
+                continue
+            ordered = sorted(prices, key=int)
+            x = [interval_to_position(int(k), '15MIN') for k in ordered]
+            y = [prices[k] for k in ordered]
+            series.append({'country': country, 'day': day, 'x': x, 'y': y})
+    return series
+
+
+def set_hourly_ticks(ax, num_intervals: int, fontsize: int = 10, color: str = None,
+                     intervals_per_hour: int = 4):
+    """Show only hourly labels (every `intervals_per_hour`-th tick).
+
+    15-minute data has 4 intervals per hour; hourly data has 1.
+    """
     hourly_ticks = range(0, num_intervals, intervals_per_hour)
     hourly_labels = [str(i // intervals_per_hour) for i in hourly_ticks]
     ax.set_xticks(hourly_ticks)
@@ -249,7 +372,8 @@ def set_hourly_ticks(ax, num_intervals: int, fontsize: int = 10, color: str = No
     ax.set_xticklabels(hourly_labels, **kwargs)
 
 
-def generate_plot(dates_data: dict, plot_path: str, hash_path: str) -> None:
+def generate_plot(dates_data: dict, plot_path: str, hash_path: str,
+                  country_name: str = "German", intervals_per_hour: int = 4) -> None:
     """Generate the classic seaborn plot."""
     data_hash = plot_is_current(dates_data, plot_path, hash_path)
     if data_hash is None:
@@ -271,10 +395,10 @@ def generate_plot(dates_data: dict, plot_path: str, hash_path: str) -> None:
     # Set Y-axis to start at 0 with some padding at top
     plt.ylim(bottom=0, top=df.max().max() * 1.1)
 
-    set_hourly_ticks(ax, len(df.columns))
+    set_hourly_ticks(ax, len(df.columns), intervals_per_hour=intervals_per_hour)
 
     # Add title and labels
-    plt.title('German Electricity Spot Prices', fontsize=18, fontweight='bold', pad=20)
+    plt.title(f'{country_name} Electricity Spot Prices', fontsize=18, fontweight='bold', pad=20)
     plt.xlabel('Hour of Day', fontsize=13, fontweight='bold')
     plt.ylabel('Price (ct/kWh)', fontsize=13, fontweight='bold')
 
@@ -299,7 +423,8 @@ def generate_plot(dates_data: dict, plot_path: str, hash_path: str) -> None:
     ic(df)
 
 
-def generate_distribution_plot(stats: pd.DataFrame, plot_path: str, hash_path: str) -> None:
+def generate_distribution_plot(stats: pd.DataFrame, plot_path: str, hash_path: str,
+                               country_name: str = "German") -> None:
     """Generate the classic seaborn distribution plot (daily mean with a ±1 sigma band)."""
     data_hash = plot_is_current(stats_hash_data(stats), plot_path, hash_path)
     if data_hash is None:
@@ -328,7 +453,7 @@ def generate_distribution_plot(stats: pd.DataFrame, plot_path: str, hash_path: s
     ax.xaxis.set_major_locator(locator)
     ax.xaxis.set_major_formatter(mdates.ConciseDateFormatter(locator))
 
-    plt.title('German Electricity Spot Prices — Daily Distribution',
+    plt.title(f'{country_name} Electricity Spot Prices — Daily Distribution',
               fontsize=18, fontweight='bold', pad=20)
     plt.xlabel('Date', fontsize=13, fontweight='bold')
     plt.ylabel('Price (ct/kWh)', fontsize=13, fontweight='bold')
@@ -349,7 +474,8 @@ def generate_distribution_plot(stats: pd.DataFrame, plot_path: str, hash_path: s
     ic("Distribution plot regenerated")
 
 
-def generate_hourly_profile_plot(stats: pd.DataFrame, plot_path: str, hash_path: str) -> None:
+def generate_hourly_profile_plot(stats: pd.DataFrame, plot_path: str, hash_path: str,
+                                 country_name: str = "German", intervals_per_hour: int = 4) -> None:
     """Generate the classic seaborn hourly profile plot (per-interval mean over all days with a ±1 sigma band)."""
     data_hash = plot_is_current(hourly_stats_hash_data(stats), plot_path, hash_path)
     if data_hash is None:
@@ -380,9 +506,9 @@ def generate_hourly_profile_plot(stats: pd.DataFrame, plot_path: str, hash_path:
         ax.axhline(0, color='black', alpha=0.4, linewidth=1)
     plt.xlim(x[0], x[-1])
 
-    set_hourly_ticks(ax, len(stats))
+    set_hourly_ticks(ax, len(stats), intervals_per_hour=intervals_per_hour)
 
-    plt.title('German Electricity Spot Prices — Hourly Profile',
+    plt.title(f'{country_name} Electricity Spot Prices — Hourly Profile',
               fontsize=18, fontweight='bold', pad=20)
     plt.xlabel('Hour of Day', fontsize=13, fontweight='bold')
     plt.ylabel('Price (ct/kWh)', fontsize=13, fontweight='bold')
@@ -403,7 +529,8 @@ def generate_hourly_profile_plot(stats: pd.DataFrame, plot_path: str, hash_path:
     ic("Hourly profile plot regenerated")
 
 
-def generate_futuristic_plot(dates_data: dict, plot_path: str, hash_path: str) -> None:
+def generate_futuristic_plot(dates_data: dict, plot_path: str, hash_path: str,
+                             country_name: str = "German", intervals_per_hour: int = 4) -> None:
     """Generate a synthwave/retro-future styled plot."""
     data_hash = plot_is_current(dates_data, plot_path, hash_path)
     if data_hash is None:
@@ -451,14 +578,14 @@ def generate_futuristic_plot(dates_data: dict, plot_path: str, hash_path: str) -
     ax.set_xlim(-0.5, num_intervals - 0.5)
     ax.set_ylim(0, y_top)
 
-    set_hourly_ticks(ax, num_intervals, color=text_light)
+    set_hourly_ticks(ax, num_intervals, color=text_light, intervals_per_hour=intervals_per_hour)
     ax.tick_params(colors=text_light)
     for spine in ax.spines.values():
         spine.set_color(grid_pink)
         spine.set_alpha(0.4)
 
     glow = [path_effects.withStroke(linewidth=3, foreground=grid_pink, alpha=0.6)]
-    title = ax.set_title('German Electricity Spot Prices', fontsize=20,
+    title = ax.set_title(f'{country_name} Electricity Spot Prices', fontsize=20,
                          fontweight='bold', fontstyle='italic', pad=20, color=title_cyan)
     title.set_path_effects(glow)
     ax.set_xlabel('Hour of Day', fontsize=13, fontweight='bold', color=text_light)
@@ -478,7 +605,8 @@ def generate_futuristic_plot(dates_data: dict, plot_path: str, hash_path: str) -
     ic(df)
 
 
-def generate_futuristic_distribution_plot(stats: pd.DataFrame, plot_path: str, hash_path: str) -> None:
+def generate_futuristic_distribution_plot(stats: pd.DataFrame, plot_path: str, hash_path: str,
+                                          country_name: str = "German") -> None:
     """Generate a synthwave/retro-future distribution plot (daily mean with a ±1 sigma band)."""
     data_hash = plot_is_current(stats_hash_data(stats), plot_path, hash_path)
     if data_hash is None:
@@ -547,7 +675,7 @@ def generate_futuristic_distribution_plot(stats: pd.DataFrame, plot_path: str, h
         spine.set_alpha(0.4)
 
     glow = [path_effects.withStroke(linewidth=3, foreground=grid_pink, alpha=0.6)]
-    title = ax.set_title('German Electricity Spot Prices — Daily Distribution', fontsize=20,
+    title = ax.set_title(f'{country_name} Electricity Spot Prices — Daily Distribution', fontsize=20,
                          fontweight='bold', fontstyle='italic', pad=20, color=title_cyan)
     title.set_path_effects(glow)
     ax.set_xlabel('Date', fontsize=13, fontweight='bold', color=text_light)
@@ -566,7 +694,8 @@ def generate_futuristic_distribution_plot(stats: pd.DataFrame, plot_path: str, h
     ic("Futuristic distribution plot regenerated")
 
 
-def generate_futuristic_hourly_profile_plot(stats: pd.DataFrame, plot_path: str, hash_path: str) -> None:
+def generate_futuristic_hourly_profile_plot(stats: pd.DataFrame, plot_path: str, hash_path: str,
+                                            country_name: str = "German", intervals_per_hour: int = 4) -> None:
     """Generate a synthwave/retro-future hourly profile plot (per-interval mean over all days with a ±1 sigma band)."""
     data_hash = plot_is_current(hourly_stats_hash_data(stats), plot_path, hash_path)
     if data_hash is None:
@@ -633,14 +762,14 @@ def generate_futuristic_hourly_profile_plot(stats: pd.DataFrame, plot_path: str,
     ax.set_xlim(-0.5, num_intervals - 0.5)
     ax.set_ylim(y_bottom, y_top)
 
-    set_hourly_ticks(ax, num_intervals, color=text_light)
+    set_hourly_ticks(ax, num_intervals, color=text_light, intervals_per_hour=intervals_per_hour)
     ax.tick_params(colors=text_light)
     for spine in ax.spines.values():
         spine.set_color(grid_pink)
         spine.set_alpha(0.4)
 
     glow = [path_effects.withStroke(linewidth=3, foreground=grid_pink, alpha=0.6)]
-    title = ax.set_title('German Electricity Spot Prices — Hourly Profile', fontsize=20,
+    title = ax.set_title(f'{country_name} Electricity Spot Prices — Hourly Profile', fontsize=20,
                          fontweight='bold', fontstyle='italic', pad=20, color=title_cyan)
     title.set_path_effects(glow)
     ax.set_xlabel('Hour of Day', fontsize=13, fontweight='bold', color=text_light)
@@ -659,31 +788,198 @@ def generate_futuristic_hourly_profile_plot(stats: pd.DataFrame, plot_path: str,
     ic("Futuristic hourly profile plot regenerated")
 
 
+NEON_PALETTE = ['#ff2975', '#ff9e00', '#00e5ff', '#b8ff29', '#9b51ff']
+
+
+def _comparison_dates() -> tuple[str, str]:
+    today_str = date.today().strftime("%Y-%m-%d")
+    tomorrow_str = (date.today() + timedelta(days=1)).strftime("%Y-%m-%d")
+    return today_str, tomorrow_str
+
+
+def generate_comparison_plot(countries_data: dict, plot_path: str, hash_path: str) -> None:
+    """Generate a classic chart comparing today vs tomorrow for the top countries."""
+    data_hash = plot_is_current(countries_data, plot_path, hash_path)
+    if data_hash is None:
+        ic("Comparison plot is up to date, skipping regeneration")
+        return
+
+    series = comparison_series(countries_data, *_comparison_dates())
+    if not series:
+        ic("No comparison data available, skipping regeneration")
+        return
+
+    color_by_country = {c: sns.color_palette('Set1', len(TOP5_COUNTRIES))[i]
+                        for i, c in enumerate(TOP5_COUNTRIES)}
+
+    plt.figure(figsize=(14, 7))
+    sns.set_style("whitegrid")
+    ax = plt.gca()
+
+    for s in series:
+        base = color_by_country[s['country']]
+        if s['day'] == 'today':
+            ax.plot(s['x'], s['y'], color=base, linewidth=2.5, alpha=0.9,
+                    label=f"{s['country']} today")
+        else:
+            ax.plot(s['x'], s['y'], color=lighten_color(base), linewidth=2,
+                    linestyle='--', alpha=0.9, label=f"{s['country']} tomorrow")
+
+    set_hourly_ticks(ax, 96, intervals_per_hour=4)
+
+    plt.title('European Electricity Spot Prices — Top 5 by Population',
+              fontsize=18, fontweight='bold', pad=20)
+    plt.xlabel('Hour of Day', fontsize=13, fontweight='bold')
+    plt.ylabel('Price (ct/kWh)', fontsize=13, fontweight='bold')
+
+    ax.grid(True, alpha=0.3, linestyle='--', linewidth=0.7)
+    ax.set_axisbelow(True)
+    plt.legend(loc='upper left', fontsize=11, framealpha=0.95)
+    ax.set_facecolor('#f8f9fa')
+
+    plt.tight_layout()
+    plt.savefig(plot_path, dpi=300, bbox_inches='tight', facecolor='white')
+
+    with open(hash_path, 'w') as f:
+        f.write(data_hash)
+
+    ic("Comparison plot regenerated")
+
+
+def generate_futuristic_comparison_plot(countries_data: dict, plot_path: str, hash_path: str) -> None:
+    """Generate a synthwave comparison chart (today vs tomorrow) for the top countries."""
+    data_hash = plot_is_current(countries_data, plot_path, hash_path)
+    if data_hash is None:
+        ic("Futuristic comparison plot is up to date, skipping regeneration")
+        return
+
+    series = comparison_series(countries_data, *_comparison_dates())
+    if not series:
+        ic("No comparison data available, skipping regeneration")
+        return
+
+    bg_dark = '#0d0221'
+    bg_purple = '#2b0a4e'
+    grid_pink = '#ff2975'
+    text_light = '#f0e6ff'
+    title_cyan = '#9df9ff'
+
+    num_intervals = 96
+    y_top = max(max(s['y']) for s in series) * 1.1
+
+    fig, ax = plt.subplots(figsize=(14, 7))
+    fig.patch.set_facecolor(bg_dark)
+
+    # Vertical purple-to-black gradient background
+    gradient = np.linspace(0, 1, 256).reshape(-1, 1)
+    bg_cmap = LinearSegmentedColormap.from_list('synthwave_bg', [bg_purple, bg_dark])
+    ax.imshow(gradient, aspect='auto', cmap=bg_cmap,
+              extent=[-0.5, num_intervals - 0.5, 0, y_top], zorder=0)
+
+    # Retro grid: horizontal lines more prominent than vertical
+    ax.grid(False)
+    for y in np.linspace(0, y_top, 12):
+        ax.axhline(y, color=grid_pink, alpha=0.18, linewidth=0.9, zorder=1)
+    for x in range(0, num_intervals, 4):
+        ax.axvline(x, color=grid_pink, alpha=0.08, linewidth=0.7, zorder=1)
+
+    color_by_country = {c: NEON_PALETTE[i] for i, c in enumerate(TOP5_COUNTRIES)}
+
+    # Neon glow lines: layered strokes with increasing width and low alpha
+    for s in series:
+        color = color_by_country[s['country']]
+        if s['day'] == 'tomorrow':
+            color = lighten_color(color)
+        linestyle = '-' if s['day'] == 'today' else '--'
+        for lw, alpha in [(10, 0.06), (7, 0.1), (4.5, 0.18)]:
+            ax.plot(s['x'], s['y'], color=color, linewidth=lw, alpha=alpha,
+                    linestyle=linestyle, solid_capstyle='round', zorder=2)
+        ax.plot(s['x'], s['y'], color=color, linewidth=2, alpha=0.95, linestyle=linestyle,
+                label=f"{s['country']} {s['day']}", solid_capstyle='round', zorder=3)
+
+    ax.set_xlim(-0.5, num_intervals - 0.5)
+    ax.set_ylim(0, y_top)
+
+    set_hourly_ticks(ax, num_intervals, color=text_light, intervals_per_hour=4)
+    ax.tick_params(colors=text_light)
+    for spine in ax.spines.values():
+        spine.set_color(grid_pink)
+        spine.set_alpha(0.4)
+
+    glow = [path_effects.withStroke(linewidth=3, foreground=grid_pink, alpha=0.6)]
+    title = ax.set_title('European Electricity Spot Prices — Top 5 by Population', fontsize=20,
+                         fontweight='bold', fontstyle='italic', pad=20, color=title_cyan)
+    title.set_path_effects(glow)
+    ax.set_xlabel('Hour of Day', fontsize=13, fontweight='bold', color=text_light)
+    ax.set_ylabel('Price (ct/kWh)', fontsize=13, fontweight='bold', color=text_light)
+    plt.setp(ax.get_yticklabels(), color=text_light)
+
+    ax.legend(loc='upper left', fontsize=11, framealpha=0.6,
+              facecolor=bg_dark, edgecolor=grid_pink, labelcolor=text_light)
+
+    plt.tight_layout()
+    plt.savefig(plot_path, dpi=300, bbox_inches='tight', facecolor=bg_dark)
+
+    with open(hash_path, 'w') as f:
+        f.write(data_hash)
+
+    ic("Futuristic comparison plot regenerated")
+
+
+COUNTRY_NAMES = {'DE': 'German', 'FR': 'French', 'NL': 'Dutch', 'BE': 'Belgian',
+                 'AT': 'Austrian', 'CH': 'Swiss', 'PL': 'Polish', 'CZ': 'Czech', 'DK': 'Danish'}
+
+
 def main(argv=None):
-    parser = argparse.ArgumentParser(description='Fetch German electricity spot prices and plot them.')
+    parser = argparse.ArgumentParser(description='Fetch electricity spot prices and plot them.')
     parser.add_argument('-f', '--futuristic', action='store_true',
                         help='Render the plot in a synthwave/retro-future style')
+    parser.add_argument('-c', '--country', choices=list(COUNTRY_NAMES), default='DE',
+                        help='Bidding zone / country to plot (default: DE)')
+    parser.add_argument('--compare', action='store_true',
+                        help='Render a top-5 population comparison chart (today vs tomorrow)')
     # parse_args(None) reads sys.argv[1:], preserving CLI behavior; callers
     # that run main() as a library (e.g. the MCP chart tool) pass argv=[]
     # so unrelated process args like --stdio don't trip argparse.
     args = parser.parse_args(argv)
 
     DB_PATH = "energy_prices.db"
+    country = args.country
 
-    dates_data = get_price_data(DB_PATH)
-    daily_stats = load_daily_price_stats(DB_PATH)
-    hourly_stats = load_hourly_price_stats(DB_PATH)
+    if args.compare:
+        countries_data = {c: get_price_data(DB_PATH, c) for c in TOP5_COUNTRIES}
+        if args.futuristic:
+            generate_futuristic_comparison_plot(countries_data, 'comparison_plot_futuristic.png',
+                                                '.comparison_hash_futuristic')
+        else:
+            generate_comparison_plot(countries_data, 'comparison_plot.png', '.comparison_hash')
+        return
+
+    # DE keeps unsuffixed filenames so the MCP server's chart paths stay valid
+    suffix = '' if country == 'DE' else f'_{country.lower()}'
+    intervals_per_hour = 4 if country_granularity(country) == '15MIN' else 1
+    country_name = COUNTRY_NAMES[country]
+
+    dates_data = get_price_data(DB_PATH, country)
+    daily_stats = load_daily_price_stats(DB_PATH, country)
+    hourly_stats = load_hourly_price_stats(DB_PATH, country)
 
     if args.futuristic:
-        generate_futuristic_plot(dates_data, 'dual_timeline_plot_futuristic.png', '.plot_hash_futuristic')
-        generate_futuristic_distribution_plot(daily_stats, 'price_distribution_futuristic.png',
-                                              '.dist_hash_futuristic')
-        generate_futuristic_hourly_profile_plot(hourly_stats, 'price_hourly_profile_futuristic.png',
-                                                '.hourly_hash_futuristic')
+        generate_futuristic_plot(dates_data, f'dual_timeline_plot_futuristic{suffix}.png',
+                                 f'.plot_hash_futuristic{suffix}',
+                                 country_name=country_name, intervals_per_hour=intervals_per_hour)
+        generate_futuristic_distribution_plot(daily_stats, f'price_distribution_futuristic{suffix}.png',
+                                              f'.dist_hash_futuristic{suffix}', country_name=country_name)
+        generate_futuristic_hourly_profile_plot(hourly_stats, f'price_hourly_profile_futuristic{suffix}.png',
+                                                f'.hourly_hash_futuristic{suffix}',
+                                                country_name=country_name, intervals_per_hour=intervals_per_hour)
     else:
-        generate_plot(dates_data, 'dual_timeline_plot.png', '.plot_hash')
-        generate_distribution_plot(daily_stats, 'price_distribution.png', '.dist_hash')
-        generate_hourly_profile_plot(hourly_stats, 'price_hourly_profile.png', '.hourly_hash')
+        generate_plot(dates_data, f'dual_timeline_plot{suffix}.png', f'.plot_hash{suffix}',
+                      country_name=country_name, intervals_per_hour=intervals_per_hour)
+        generate_distribution_plot(daily_stats, f'price_distribution{suffix}.png', f'.dist_hash{suffix}',
+                                   country_name=country_name)
+        generate_hourly_profile_plot(hourly_stats, f'price_hourly_profile{suffix}.png', f'.hourly_hash{suffix}',
+                                     country_name=country_name, intervals_per_hour=intervals_per_hour)
 
 
 def get_current_electricity_price(davis_token):

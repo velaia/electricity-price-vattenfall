@@ -1,6 +1,6 @@
 # Strom Börsenpreis
 
-Holen Sie sich aktuelle deutsche Strompreise von [Vattenfall Börsenpreise](https://www.vattenfall.de/strom/tarife/oekostrom-dynamik-boersenpreise) und nutzen Sie sie als Diagramme, Home-Assistant-Sensoren oder über einen MCP-Server.
+Holen Sie sich aktuelle deutsche Strompreise von [Vattenfall Börsenpreise](https://www.vattenfall.de/strom/tarife/oekostrom-dynamik-boersenpreise) — plus Day-Ahead-Preise für Deutschlands Nachbarländer von [energy-charts.info](https://www.energy-charts.info) — und nutzen Sie sie als Diagramme, Home-Assistant-Sensoren oder über einen MCP-Server.
 
 Die Preise für morgen werden zwischen 12:00 und 15:00 Uhr veröffentlicht und sind in der Web-UI von Vattenfall nicht sichtbar. Die API stellt sie jedoch bereit, sodass sie in dieser App angezeigt werden.
 
@@ -10,6 +10,7 @@ Die Preise für morgen werden zwischen 12:00 und 15:00 Uhr veröffentlicht und s
 ## Funktionen
 
 - Ruft 15-Minuten-Börsenpreise (ct/kWh) für heute und morgen ab
+- Deckt Deutschland (Vattenfall-API) sowie FR, NL, BE, AT, CH, PL, CZ, DK ab (energy-charts.info, ohne API-Schlüssel)
 - Zwischenspeichert Preise in SQLite (`energy_prices.db`), sodass die API nur bei fehlenden Daten aufgerufen wird
 - Erstellt Diagramme in zwei Stilen: klassisch (seaborn) und Synthwave/"futuristisch"
 - Veröffentlicht Preissensoren an Home Assistant über MQTT Discovery
@@ -31,6 +32,30 @@ Erstellt drei Diagramme im Projektverzeichnis:
 - `price_hourly_profile.png` — Intervallmittelwert über alle Tage mit ±1σ/±2σ-Bändern
 
 Fügen Sie `-f`/`--futuristic` hinzu, um die Synthwave-Varianten zu erzeugen.
+
+### Europäische Länder
+
+Mit `-c`/`--country` können Sie Day-Ahead-Preise für jeden unterstützten Markt darstellen (Standard `DE`):
+
+```commandline
+uv run main.py -c FR
+uv run main.py -c DK
+```
+
+Unterstützte Länder: `DE`, `FR`, `NL`, `BE`, `AT`, `CH`, `PL`, `CZ`, `DK`. Nicht-DE-Daten stammen von [energy-charts.info](https://www.energy-charts.info) (Fraunhofer ISE) — ohne Registrierung oder API-Schlüssel. `DK` verwendet die Gebotszone DK1 (Jütland, mit Deutschland gekoppelt). Die Preise werden pro Land in derselben SQLite-Datenbank zwischengespeichert.
+
+Nicht-DE-Läufe schreiben länderspezifische Dateien, z. B. `dual_timeline_plot_fr.png`, `price_distribution_fr.png`, `price_hourly_profile_fr.png` (plus `_futuristic`-Varianten mit `-f`).
+
+### Vergleichsdiagramm
+
+Mit `--compare` wird ein einziges Diagramm erstellt, das die **top 5 Länder nach Einwohnerzahl** (DE, FR, PL, NL, BE) vergleicht:
+
+```commandline
+uv run main.py --compare
+uv run main.py --compare -f   # Synthwave-Variante
+```
+
+Jedes Land bekommt eine eigene Farbe; die Linie für heute ist durchgezogen, die für morgen gestrichelt in einer helleren Nuance derselben Farbe. Die Legende zeigt alle 10 Reihen (5 Länder × heute/morgen). Ausgabe: `comparison_plot.png` bzw. `comparison_plot_futuristic.png`.
 
 ### Home Assistant (MQTT)
 

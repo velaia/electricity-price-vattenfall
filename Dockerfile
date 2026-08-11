@@ -7,6 +7,7 @@ WORKDIR /app
 ADD uv.lock /app/uv.lock
 ADD pyproject.toml /app/pyproject.toml
 ADD main.py /app/main.py
+ADD energy_charts_client.py /app/energy_charts_client.py
 
 RUN uv sync --no-dev --frozen --no-install-project
 
