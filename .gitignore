@@ -1,1 +1,7 @@
 *.db
+.env
+.*_hash*
+/*.png
+__pycache__/
+.idea/
+.claude/
