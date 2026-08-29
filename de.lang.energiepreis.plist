@@ -1,0 +1,45 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>Label</key>
+    <string>de.lang.energiepreis</string>
+
+    <key>ProgramArguments</key>
+    <array>
+        <string>/Users/daniel/git/energiepreis-vattenfall-api/cron_script.sh</string>
+    </array>
+
+    <key>WorkingDirectory</key>
+    <string>/Users/daniel/git/energiepreis-vattenfall-api</string>
+
+    <!-- 14:30 local, daily. Day-ahead results publish around 13:00 CET, so this
+         leaves a comfortable margin. Unlike cron, launchd runs a missed job
+         shortly after the Mac wakes instead of skipping the day entirely. -->
+    <key>StartCalendarInterval</key>
+    <dict>
+        <key>Hour</key>
+        <integer>14</integer>
+        <key>Minute</key>
+        <integer>30</integer>
+    </dict>
+
+    <!-- Appended, never rotated; the script logs a few lines per run. -->
+    <key>StandardOutPath</key>
+    <string>/Users/daniel/Library/Logs/energiepreis.log</string>
+    <key>StandardErrorPath</key>
+    <string>/Users/daniel/Library/Logs/energiepreis.log</string>
+
+    <!-- The script calls uv by absolute path; this is belt-and-braces for `open`
+         and anything uv shells out to. -->
+    <key>EnvironmentVariables</key>
+    <dict>
+        <key>PATH</key>
+        <string>/opt/homebrew/bin:/usr/bin:/bin:/usr/sbin:/sbin</string>
+    </dict>
+
+    <!-- No run at login: the 14:30 slot plus launchd's wake catch-up is enough. -->
+    <key>RunAtLoad</key>
+    <false/>
+</dict>
+</plist>
