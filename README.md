@@ -26,8 +26,10 @@ This assumes you have [Astral uv](https://github.com/astral-sh/uv) installed.
 uv run main.py
 ```
 
-Generates three plots in the project root:
-- `dual_timeline_plot.png` — today's and tomorrow's hourly prices
+Generates `dual_timeline_plot.png` in the project root — today's and tomorrow's
+hourly prices.
+
+Add `-a`/`--all` to also render the two summary plots:
 - `price_distribution.png` — daily mean with a ±1σ band
 - `price_hourly_profile.png` — per-interval mean over all days with ±1σ/±2σ bands
 
@@ -56,6 +58,9 @@ uv run main.py --compare -f   # synthwave variant
 ```
 
 Each country gets its own color; today's line is solid, tomorrow's is dashed in a lighter shade of the same color. Legend shows all 10 series (5 countries × today/tomorrow). Output: `comparison_plot.png` or `comparison_plot_futuristic.png`.
+
+Plots are written at 150 dpi (2100×1050 px). PNG encoding dominates the runtime,
+so raising `PLOT_DPI` in `main.py` costs roughly linearly in wall-clock time.
 
 ### Home Assistant (MQTT)
 

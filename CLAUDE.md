@@ -20,8 +20,11 @@ This repository fetches German electricity spot prices from the Vattenfall Davis
 uv run main.py
 ```
 
-Generates three plots in the project root (classic style):
-- `dual_timeline_plot.png` — today's and tomorrow's hourly prices
+Generates `dual_timeline_plot.png` in the project root (classic style) — today's
+and tomorrow's hourly prices.
+
+Add `-a`/`--all` to also render the two summary plots, whose stats queries are
+otherwise skipped:
 - `price_distribution.png` — daily mean with ±1σ band
 - `price_hourly_profile.png` — per-interval mean over all days with ±1σ/±2σ bands
 
@@ -87,7 +90,7 @@ docker run vattenfall-prices-germany:0.1
 1. **Authentication** (DE only): `get_davis_token()` obtains an anonymous access token from Vattenfall's Davis API. No user credentials needed; the token is temporary and used for the session.
 2. **Data Retrieval**: For DE, `get_current_electricity_price(davis_token)` fetches 15-minute spot prices (`Typ: "15MIN_STROM"`), returning today's and tomorrow's prices (tomorrow available after ~noon). For other countries, `get_price_data(db_path, country)` calls `energy_charts_client.fetch_day_ahead_prices(country, start, end)` per date — the API returns 15-min data in EUR/MWh, converted to ct/kWh (÷10) and bucketed by local CET/CEST date.
 3. **Caching**: `get_price_data(db_path, country)` stores each day's prices in SQLite (`energy_prices.db`) and only calls the API when today's or tomorrow's data is missing for that country. A missing date (e.g. tomorrow not yet published) degrades gracefully to a today-only chart.
-4. **Visualization**: `main()` loads cached data plus per-day and per-interval statistics, then generates the plots.
+4. **Visualization**: `main()` renders the dual-timeline plot from the cached data. The per-day and per-interval statistics — and the two summary plots they feed — are only loaded when `-a`/`--all` is given.
 
 ### SQLite Schema
 
@@ -115,6 +118,28 @@ Each `WerteNetto` dict uses HHMM-style keys ("0", "15", "30", "45", "100", ..., 
 
 Each plot has a companion hash file (`.plot_hash`, `.dist_hash`, `.hourly_hash`, plus `_futuristic` variants). `plot_is_current()` skips regeneration when the data hash matches the stored one.
 
+### Deferred Imports
+
+`main.py` imports no heavy third-party module at module scope (only `icecream`).
+numpy/pandas/seaborn/matplotlib are bound as globals by `load_plotting_stack()`,
+which every `generate_*` function calls *after* its `plot_is_current()` check;
+`requests` arrives with the deferred `energy_charts_client` import inside
+`get_price_data()` and the two Vattenfall fetch helpers. A fully cached
+`uv run main.py` therefore touches only stdlib and SQLite and finishes in ~90 ms,
+against ~700 ms when everything was imported eagerly. Keep new third-party imports
+inside the functions that need them.
+
+### Debug Output
+
+`ic()` reconstructs the source expression behind each call, so the first one makes
+asttokens parse all of `main.py` — ~135 ms per process. `configure_debug_output()`
+disables icecream unless `DEBUG` is set, and is called only from `main.py`'s
+`__main__` guard, so `mqtt_publisher.py` and `mcp_server.py` keep their logging:
+
+```bash
+DEBUG=1 uv run main.py
+```
+
 ### MQTT Publisher
 
 - Publishes 8 sensors via Home Assistant MQTT Discovery: current price, next-hour price, today min/max/avg, tomorrow min/max/avg.
@@ -137,7 +162,7 @@ Each plot has a companion hash file (`.plot_hash`, `.dist_hash`, `.hourly_hash`,
 - `mcp[cli]`: MCP server framework
 - `ollama`: Ollama chat client
 - `python-dotenv`: `.env` config loading
-- `icecream`: Debug printing (used throughout for development visibility)
+- `icecream`: Debug printing (used throughout for development visibility; off unless `DEBUG` is set)
 
 ## Key Implementation Details
 

@@ -26,8 +26,10 @@ Dies setzt voraus, dass Sie [Astral uv](https://github.com/astral-sh/uv) install
 uv run main.py
 ```
 
-Erstellt drei Diagramme im Projektverzeichnis:
+Erstellt ein Diagramm im Projektverzeichnis:
 - `dual_timeline_plot.png` — stündliche Preise für heute und morgen
+
+Mit `-a`/`--all` werden zusätzlich die beiden Auswertungs-Diagramme erzeugt:
 - `price_distribution.png` — Tagesmittelwert mit ±1σ-Band
 - `price_hourly_profile.png` — Intervallmittelwert über alle Tage mit ±1σ/±2σ-Bändern
 

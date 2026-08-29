@@ -1,22 +1,54 @@
+from __future__ import annotations
+
 import argparse
-import requests
 import json
-import numpy as np
-import seaborn as sns
-import pandas as pd
-from matplotlib import pyplot as plt
-import matplotlib.dates as mdates
-import matplotlib.patheffects as path_effects
-from matplotlib.colors import LinearSegmentedColormap, to_rgb
 from datetime import date, datetime, timedelta
 from icecream import ic
 import sqlite3
 import hashlib
 import os
 
-from energy_charts_client import fetch_day_ahead_prices
+# numpy/pandas/seaborn/matplotlib are bound by load_plotting_stack() rather than
+# imported here. seaborn alone pulls in the other three and costs ~380 ms, and a
+# run whose plots are all current never draws anything — it only reads SQLite and
+# compares hashes. `requests` is deferred the same way (see the fetch helpers and
+# energy_charts_client), since a cache hit never talks to an API.
+np = pd = sns = plt = mdates = path_effects = LinearSegmentedColormap = None
+_PLOTTING_LOADED = False
 
-sns.set_theme()
+
+def load_plotting_stack() -> None:
+    """Bind the plotting modules as globals and apply the seaborn theme, once.
+
+    Called by every generate_* function *after* its staleness check, so the
+    ~380 ms import is only paid when a plot actually has to be drawn.
+    """
+    global np, pd, sns, plt, mdates, path_effects, LinearSegmentedColormap
+    global _PLOTTING_LOADED
+    if _PLOTTING_LOADED:
+        return
+    import numpy as np
+    import pandas as pd
+    import seaborn as sns
+    from matplotlib import pyplot as plt
+    import matplotlib.dates as mdates
+    import matplotlib.patheffects as path_effects
+    from matplotlib.colors import LinearSegmentedColormap
+    sns.set_theme()
+    _PLOTTING_LOADED = True
+
+
+def configure_debug_output() -> None:
+    """Silence icecream unless DEBUG is set in the environment.
+
+    ic() reconstructs the source expression behind each call, so the first one
+    makes asttokens parse this whole module — ~135 ms per process. Only the CLI
+    entry point calls this, so importers such as mqtt_publisher.py keep their
+    ic() logging by default.
+    """
+    if not os.environ.get("DEBUG"):
+        ic.disable()
+
 
 # Top 5 supported markets by population: DE, FR, PL, NL, BE (same as the top 5
 # by electricity consumption). Used by the --compare chart.
@@ -26,6 +58,7 @@ TOMORROW_LIGHTEN = 0.5  # blend toward white for the tomorrow line of each count
 
 def lighten_color(color, amount: float = TOMORROW_LIGHTEN):
     """Blend a matplotlib color toward white; amount=1 returns white."""
+    from matplotlib.colors import to_rgb
     r, g, b = to_rgb(color)
     return (r + (1 - r) * amount, g + (1 - g) * amount, b + (1 - b) * amount)
 
@@ -251,6 +284,8 @@ def get_price_data(db_path: str = "energy_prices.db", country: str = "DE") -> di
         for date_str in (today_str, tomorrow_str):
             if date_str in dates_data:
                 continue
+            # Deferred: this module pulls in requests, which a cache hit never needs.
+            from energy_charts_client import fetch_day_ahead_prices
             try:
                 fetched = fetch_day_ahead_prices(country, date_str, date_str)
             except Exception as e:
@@ -266,6 +301,7 @@ def get_price_data(db_path: str = "energy_prices.db", country: str = "DE") -> di
 
 def load_daily_price_stats(db_path: str, country: str = "DE") -> pd.DataFrame:
     """Load all stored days for a country and compute per-day mean and std."""
+    load_plotting_stack()  # needs pandas
     conn = sqlite3.connect(db_path)
     try:
         df = pd.read_sql_query(
@@ -302,6 +338,7 @@ def interval_to_position(interval_index: int, granularity: str) -> int:
 
 def load_hourly_price_stats(db_path: str, country: str = "DE") -> pd.DataFrame:
     """Compute per-interval mean and std across all stored days for a country."""
+    load_plotting_stack()  # needs pandas
     conn = sqlite3.connect(db_path)
     try:
         df = pd.read_sql_query(
@@ -394,6 +431,8 @@ def generate_plot(dates_data: dict, plot_path: str, hash_path: str,
         ic("Plot is up to date, skipping regeneration")
         return
 
+    load_plotting_stack()
+
     df = build_dataframe(dates_data)
 
     # Create figure with better size
@@ -446,6 +485,8 @@ def generate_distribution_plot(stats: pd.DataFrame, plot_path: str, hash_path: s
         ic("Distribution plot is up to date, skipping regeneration")
         return
 
+    load_plotting_stack()
+
     lower = stats['mean'] - stats['std']
     upper = stats['mean'] + stats['std']
 
@@ -497,6 +538,8 @@ def generate_hourly_profile_plot(stats: pd.DataFrame, plot_path: str, hash_path:
     if data_hash is None:
         ic("Hourly profile plot is up to date, skipping regeneration")
         return
+
+    load_plotting_stack()
 
     x = stats['interval_index'].values
     lower = stats['mean'] - stats['std']
@@ -553,6 +596,8 @@ def generate_futuristic_plot(dates_data: dict, plot_path: str, hash_path: str,
     if data_hash is None:
         ic("Futuristic plot is up to date, skipping regeneration")
         return
+
+    load_plotting_stack()
 
     df = build_dataframe(dates_data)
 
@@ -630,6 +675,8 @@ def generate_futuristic_distribution_plot(stats: pd.DataFrame, plot_path: str, h
     if data_hash is None:
         ic("Futuristic distribution plot is up to date, skipping regeneration")
         return
+
+    load_plotting_stack()
 
     bg_dark = '#0d0221'
     bg_purple = '#2b0a4e'
@@ -720,6 +767,8 @@ def generate_futuristic_hourly_profile_plot(stats: pd.DataFrame, plot_path: str,
     if data_hash is None:
         ic("Futuristic hourly profile plot is up to date, skipping regeneration")
         return
+
+    load_plotting_stack()
 
     bg_dark = '#0d0221'
     bg_purple = '#2b0a4e'
@@ -824,6 +873,8 @@ def generate_comparison_plot(countries_data: dict, plot_path: str, hash_path: st
         ic("Comparison plot is up to date, skipping regeneration")
         return
 
+    load_plotting_stack()
+
     series = comparison_series(countries_data, *_comparison_dates())
     if not series:
         ic("No comparison data available, skipping regeneration")
@@ -872,6 +923,8 @@ def generate_futuristic_comparison_plot(countries_data: dict, plot_path: str, ha
     if data_hash is None:
         ic("Futuristic comparison plot is up to date, skipping regeneration")
         return
+
+    load_plotting_stack()
 
     series = comparison_series(countries_data, *_comparison_dates())
     if not series:
@@ -958,6 +1011,9 @@ def main(argv=None):
                         help='Bidding zone / country to plot (default: DE)')
     parser.add_argument('--compare', action='store_true',
                         help='Render a top-5 population comparison chart (today vs tomorrow)')
+    parser.add_argument('-a', '--all', action='store_true', dest='all_plots',
+                        help='Also render the daily-distribution and hourly-profile summary '
+                             'plots (skipped by default, along with their stats queries)')
     # parse_args(None) reads sys.argv[1:], preserving CLI behavior; callers
     # that run main() as a library (e.g. the MCP chart tool) pass argv=[]
     # so unrelated process args like --stdio don't trip argparse.
@@ -981,21 +1037,30 @@ def main(argv=None):
     country_name = COUNTRY_NAMES[country]
 
     dates_data = get_price_data(DB_PATH, country)
-    daily_stats = load_daily_price_stats(DB_PATH, country)
-    hourly_stats = load_hourly_price_stats(DB_PATH, country)
 
     if args.futuristic:
         generate_futuristic_plot(dates_data, f'dual_timeline_plot_futuristic{suffix}.png',
                                  f'.plot_hash_futuristic{suffix}',
                                  country_name=country_name, intervals_per_hour=intervals_per_hour)
+    else:
+        generate_plot(dates_data, f'dual_timeline_plot{suffix}.png', f'.plot_hash{suffix}',
+                      country_name=country_name, intervals_per_hour=intervals_per_hour)
+
+    if not args.all_plots:
+        return
+
+    # The summary plots aggregate every stored day, so both their stats queries
+    # and the pandas import those need stay behind -a/--all.
+    daily_stats = load_daily_price_stats(DB_PATH, country)
+    hourly_stats = load_hourly_price_stats(DB_PATH, country)
+
+    if args.futuristic:
         generate_futuristic_distribution_plot(daily_stats, f'price_distribution_futuristic{suffix}.png',
                                               f'.dist_hash_futuristic{suffix}', country_name=country_name)
         generate_futuristic_hourly_profile_plot(hourly_stats, f'price_hourly_profile_futuristic{suffix}.png',
                                                 f'.hourly_hash_futuristic{suffix}',
                                                 country_name=country_name, intervals_per_hour=intervals_per_hour)
     else:
-        generate_plot(dates_data, f'dual_timeline_plot{suffix}.png', f'.plot_hash{suffix}',
-                      country_name=country_name, intervals_per_hour=intervals_per_hour)
         generate_distribution_plot(daily_stats, f'price_distribution{suffix}.png', f'.dist_hash{suffix}',
                                    country_name=country_name)
         generate_hourly_profile_plot(hourly_stats, f'price_hourly_profile{suffix}.png', f'.hourly_hash{suffix}',
@@ -1042,6 +1107,7 @@ def get_current_electricity_price(davis_token):
         'sec-ch-ua-platform': '"macOS"',
         'sec-gpc': '1'
     }
+    import requests
     response = requests.request("POST", url, headers=headers, data=payload, timeout=REQUEST_TIMEOUT)
     response.raise_for_status()
     response_json = response.json()
@@ -1086,6 +1152,7 @@ def get_davis_token() -> str:
         'sec-ch-ua-mobile': '?0',
         'sec-ch-ua-platform': '"macOS"'
     }
+    import requests
     response = requests.request("POST", url, headers=headers, data=payload, timeout=REQUEST_TIMEOUT)
     response.raise_for_status()
     response_json = response.json()
@@ -1097,4 +1164,5 @@ def get_davis_token() -> str:
 
 
 if __name__ == "__main__":
+    configure_debug_output()
     main()
