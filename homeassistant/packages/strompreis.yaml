@@ -1,0 +1,62 @@
+# German day-ahead spot price (EPEX/Nord Pool area "GER" = DE-LU) for
+# yesterday, today and tomorrow, as [timestamp_ms, ct/kWh] pairs for the
+# ApexCharts card in dashboard_card.yaml. Identical to Vattenfall's "netto" price.
+#
+# Install: copy to /config/packages/strompreis.yaml and make sure
+# configuration.yaml contains:
+#   homeassistant:
+#     packages: !include_dir_named packages
+#
+# Refreshes at 14:05 (tomorrow is published ~13:00), shortly after midnight
+# (so the three days roll over) and on HA start.
+
+template:
+  - trigger:
+      - trigger: time
+        at: ["14:05:00", "00:00:30"]
+      - trigger: homeassistant
+        event: start
+    actions:
+      - action: nordpool.get_prices_for_date
+        continue_on_error: true
+        data:
+          config_entry: 01M40CQJEQVV1B4T7XDWQZ1MWB
+          areas: GER
+          currency: EUR
+          date: "{{ (now() - timedelta(days=1)).date() }}"
+        response_variable: yesterday
+      - action: nordpool.get_prices_for_date
+        continue_on_error: true
+        data:
+          config_entry: 01M40CQJEQVV1B4T7XDWQZ1MWB
+          areas: GER
+          currency: EUR
+          date: "{{ now().date() }}"
+        response_variable: today
+      - action: nordpool.get_prices_for_date
+        continue_on_error: true
+        data:
+          config_entry: 01M40CQJEQVV1B4T7XDWQZ1MWB
+          areas: GER
+          currency: EUR
+          date: "{{ (now() + timedelta(days=1)).date() }}"
+        response_variable: tomorrow
+    sensor:
+      - name: Strompreis Kurven
+        unique_id: strompreis_kurven
+        icon: mdi:chart-line
+        # State = number of 15-min intervals available (288 once tomorrow is out)
+        state: >
+          {{ [yesterday, today, tomorrow]
+             | select('mapping') | map(attribute='GER', default=[])
+             | map('count') | sum }}
+        attributes:
+          # Nord Pool returns EUR/MWh; /10 gives ct/kWh
+          points: >
+            {% set ns = namespace(out=[]) %}
+            {% for resp in [yesterday, today, tomorrow] if resp is mapping %}
+              {% for p in resp.get('GER', []) %}
+                {% set ns.out = ns.out + [[(as_timestamp(p.start) * 1000) | int, (p.price / 10) | round(3)]] %}
+              {% endfor %}
+            {% endfor %}
+            {{ ns.out }}

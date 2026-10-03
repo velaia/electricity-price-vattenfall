@@ -1,0 +1,20 @@
+# Requires the ApexCharts card (HACS → Frontend → "apexcharts-card").
+type: custom:apexcharts-card
+header:
+  show: true
+  title: Strompreis DE (ct/kWh)
+graph_span: 3d
+span:
+  start: day
+  offset: -1d
+now:
+  show: true
+  label: jetzt
+yaxis:
+  - decimals: 1
+series:
+  - entity: sensor.strompreis_kurven
+    name: Spotpreis
+    curve: stepline
+    stroke_width: 2
+    data_generator: return entity.attributes.points;
